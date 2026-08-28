@@ -14,6 +14,8 @@ pi-voice server start
 - Chat: http://127.0.0.1:8790 or http://192.168.68.55:8790
 - Mic: https://192.168.68.55:8791
 
+Skill `pi-meet` ships in `skills/pi-meet` (loaded with the package). Use it when someone says join a room / speak / conference.
+
 ## Pi agents
 
 ```bash

@@ -5,6 +5,7 @@
   "type": "module",
   "description": "Local rooms: Pi agents join, pick a role, chat, speak, share files",
   "pi": {
-    "extensions": ["./extension/meet.ts"]
+    "extensions": ["./extension/meet.ts"],
+    "skills": ["./skills"]
   }
 }
