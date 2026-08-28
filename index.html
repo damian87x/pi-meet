@@ -7,124 +7,171 @@
   * { box-sizing: border-box; }
   html, body { height:100%; margin:0; }
   body { font: 15px/1.4 ui-sans-serif, system-ui; background:var(--bg); color:var(--fg); display:flex; flex-direction:column; }
-  header { display:flex; gap:12px; align-items:center; flex-wrap:wrap; padding:12px 16px; border-bottom:1px solid var(--line); flex:none; }
-  header h1 { font-size:16px; margin:0; font-weight:600; }
+  header { display:flex; gap:8px; align-items:center; flex-wrap:wrap; padding:10px 12px; border-bottom:1px solid var(--line); }
+  header h1 { font-size:16px; margin:0; }
   select, button, input { background:var(--card); color:var(--fg); border:1px solid var(--line); border-radius:8px; padding:8px 10px; }
-  button { cursor:pointer; touch-action:none; user-select:none; }
+  button { cursor:pointer; }
   button.rec { background:#da3633; border-color:#f85149; }
   .wrap { flex:1; display:grid; grid-template-columns:minmax(0,1fr) minmax(260px, 380px); min-height:0; }
-  @media (max-width:900px) { .wrap { grid-template-columns:1fr; grid-template-rows:1fr 40vh; } }
-  #grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; padding:16px; overflow:auto; }
-  @media (max-width:700px) { #grid { grid-template-columns:1fr 1fr; } }
-  .tile { background:var(--card); border:1px solid var(--line); border-radius:12px; min-height:120px; padding:14px; min-width:0; }
-  .tile.talk { border-color:var(--talk); box-shadow:0 0 0 1px var(--talk); }
-  .tile.think { border-color:#58a6ff; box-shadow:0 0 0 1px #58a6ff; }
+  @media (max-width:900px) { .wrap { grid-template-columns:1fr; } }
+  #grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(160px,1fr)); gap:10px; padding:12px; overflow:auto; align-content:start; }
+  .tile { background:var(--card); border:1px solid var(--line); border-radius:12px; min-height:90px; padding:12px; min-width:0; }
   .tile.you { border-color:var(--you); }
-  .who { font-weight:600; }
-  .role { color:var(--mut); font-size:12px; }
-  .line { margin-top:10px; color:var(--fg); overflow-wrap:anywhere; }
-  #chat { display:flex; flex-direction:column; min-width:0; min-height:0; border-left:1px solid var(--line); background:var(--card); }
+  .who { font-weight:600; overflow-wrap:anywhere; }
+  .role { color:var(--mut); font-size:12px; overflow-wrap:anywhere; }
+  #chat { display:flex; flex-direction:column; min-width:0; border-left:1px solid var(--line); background:var(--card); }
   #log { flex:1; overflow:auto; padding:12px; display:flex; flex-direction:column; gap:8px; }
   .msg { border:1px solid var(--line); border-radius:8px; padding:8px 10px; overflow-wrap:anywhere; }
   .msg.me { border-color:var(--you); }
   .msg b { display:block; font-size:12px; color:var(--mut); }
-  #chatform { display:flex; gap:8px; padding:10px; border-top:1px solid var(--line); flex:none; }
-  #typed { flex:1; min-width:0; }
-  #status { margin-left:auto; color:var(--mut); font-size:13px; display:flex; align-items:center; gap:8px; }
-  .spin { width:14px; height:14px; border:2px solid var(--line); border-top-color:#58a6ff; border-radius:50%; animation:spin .7s linear infinite; flex:none; display:inline-block; }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  #thinkbar { display:none; align-items:center; gap:8px; color:#58a6ff; font-weight:600; }
-  body.thinking #thinkbar { display:flex; }
+  #chatform { display:flex; flex-wrap:wrap; gap:8px; padding:10px; border-top:1px solid var(--line); }
+  #typed { flex:1; min-width:120px; }
+  #status { margin-left:auto; color:var(--mut); font-size:13px; }
 </style>
 <header>
   <h1>Pi Meet</h1>
-  <select id="company">
-    <option value="solvie">Solvie</option>
-    <option value="miyahaihr">Miyahaihr</option>
-    <option value="autonoxis">Autonoxis</option>
-  </select>
-  <button type="button" id="talk">Join</button>
-  <span id="thinkbar"><span class="spin"></span> thinking</span>
-  <span id="status">idle</span>
+  <select id="rooms"><option value="">(no rooms)</option></select>
+  <input id="newroom" placeholder="new room name" size="14" />
+  <button type="button" id="create">Create</button>
+  <button type="button" id="enter">Join</button>
+  <input id="myrole" placeholder="your role (optional)" size="14" />
+  <button type="button" id="talk">Voice</button>
+  <span id="status">pick a room</span>
 </header>
 <div class="wrap">
   <main id="grid"></main>
   <aside id="chat">
     <div id="log"></div>
     <form id="chatform">
-      <input id="typed" autocomplete="off" placeholder="Chat backup — Enter. /join /leave /sales …" />
+      <input id="typed" autocomplete="off" placeholder="Chat — Enter. /sales hi  or attach a file" />
+      <input id="file" type="file" />
       <button type="submit">Send</button>
     </form>
   </aside>
 </div>
 <script>
-const PEOPLE = [
-  ["you","You","operator"],
-  ["chair","Chair","routes"],
-  ["gtm","GTM","marketing"],
-  ["sales","Sales","pipeline"],
-  ["cs","CS","customers"],
-  ["ops","Ops","ops"],
-];
-const tiles = {};
 const grid = document.getElementById("grid");
-for (const [id,name,role] of PEOPLE) {
-  const el = document.createElement("div");
-  el.className = "tile" + (id==="you" ? " you" : "");
-  el.innerHTML = `<div class="who">${name}</div><div class="role">${role}</div><div class="line" id="l-${id}"></div>`;
-  grid.appendChild(el);
-  tiles[id] = el;
-}
 const logEl = document.getElementById("log");
 const status = document.getElementById("status");
-const btn = document.getElementById("talk");
+const roomsEl = document.getElementById("rooms");
+const talkBtn = document.getElementById("talk");
 const typed = document.getElementById("typed");
-const queue = [];
-function esc(s) {
-  return String(s).replace(/[&<>"]/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;" }[c]));
-}
-function log(s) { bubble("sys", s); }
-function bubble(who, text) {
+let roomId = "", memberId = "", since = 0, live = false, busy = false;
+let rec, chunks, stream, analyser, audioCtx, sourceNode, vadTimer;
+let heard = false, speechAt = 0, lastLoud = 0;
+const SILENCE_MS = 1100, MIN_SPEECH_MS = 280, SPEECH_RMS = 0.018;
+
+function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;" }[c])); }
+function setStatus(s) { status.textContent = s; }
+function bubble(who, text, files) {
   const row = document.createElement("div");
   row.className = "msg" + (who === "You" ? " me" : "");
-  row.innerHTML = `<b>${esc(who)}</b>${esc(text)}`;
+  let extra = "";
+  if (files?.length) extra = files.map((f) => `<div class="role">📎 ${esc(f.name)}${f.path ? " — " + esc(f.path) : ""}</div>`).join("");
+  row.innerHTML = `<b>${esc(who)}</b>${esc(text || "")}${extra}`;
   logEl.appendChild(row);
   logEl.scrollTop = logEl.scrollHeight;
 }
-function setStatus(s) { status.textContent = s; }
-function think(id) {
-  document.body.classList.toggle("thinking", Boolean(id));
-  for (const [tid, el] of Object.entries(tiles)) {
-    el.classList.toggle("think", tid === id);
-  }
-  if (id && id !== "you") {
-    const line = document.getElementById("l-" + id);
-    if (line) line.innerHTML = '<span class="spin"></span> thinking';
-    setStatus((tiles[id]?.querySelector(".who")?.textContent || id) + " thinking");
+
+async function api(path, init) {
+  const r = await fetch(path, init);
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || r.status);
+  return j;
+}
+
+function renderMembers(members) {
+  grid.innerHTML = "";
+  for (const m of members || []) {
+    const el = document.createElement("div");
+    el.className = "tile" + (m.id === memberId ? " you" : "");
+    el.innerHTML = `<div class="who">${esc(m.name)}</div><div class="role">${esc(m.kind)} · ${esc(m.role || "choosing role…")}</div>`;
+    grid.appendChild(el);
   }
 }
 
-if (!window.isSecureContext) {
-  const https = location.protocol === "http:"
-    ? location.href.replace("http://", "https://").replace(":8790", ":8791")
-    : "";
-  setStatus("mic needs HTTPS");
-  bubble("sys", "Mic: open " + (https || "https://192.168.68.55:8791") + " (accept cert). Chat still works here.");
+async function refreshRooms() {
+  const j = await api("/api/rooms");
+  const cur = roomsEl.value;
+  roomsEl.innerHTML = "";
+  for (const r of j.rooms || []) {
+    const o = document.createElement("option");
+    o.value = r.id;
+    o.textContent = `${r.name} (${r.id})`;
+    roomsEl.appendChild(o);
+  }
+  if (!roomsEl.options.length) {
+    const o = document.createElement("option");
+    o.value = "";
+    o.textContent = "(no rooms)";
+    roomsEl.appendChild(o);
+  }
+  if (cur) roomsEl.value = cur;
 }
 
-const SILENCE_MS = 1100;
-const MIN_SPEECH_MS = 280;
-const SPEECH_RMS = 0.018;
+async function createRoom() {
+  const name = document.getElementById("newroom").value.trim() || "room";
+  const r = await api("/api/rooms", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
+  await refreshRooms();
+  roomsEl.value = r.id;
+  await enterRoom();
+}
 
-let live = false;
-let rec, chunks, stream, analyser, audioCtx, sourceNode, vadTimer;
-let heard = false, speechAt = 0, lastLoud = 0, busy = false;
+async function enterRoom() {
+  roomId = roomsEl.value;
+  if (!roomId) throw new Error("create a room first");
+  const role = document.getElementById("myrole").value.trim();
+  const j = await api(`/api/rooms/${roomId}/join`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ kind: "human", name: "You", role }),
+  });
+  memberId = j.member.id;
+  since = j.room.seq;
+  renderMembers(j.room.members);
+  setStatus("in " + roomId);
+}
+
+async function tick() {
+  if (!roomId) return;
+  const j = await api(`/api/rooms/${roomId}/events?since=${since}`);
+  renderMembers(j.room.members);
+  for (const e of j.events || []) {
+    since = e.seq;
+    if (e.type === "message") {
+      bubble(e.memberId === memberId ? "You" : (e.name + (e.role ? ` · ${e.role}` : "")), e.text, e.files);
+      if (e.audio && e.memberId !== memberId) {
+        const a = new Audio(e.audio);
+        a.play().catch(() => {});
+      }
+    }
+    if (e.type === "join") bubble("sys", `${e.name} joined${e.role ? " as " + e.role : ""}`);
+    if (e.type === "role") bubble("sys", `${e.name} is now ${e.role}`);
+  }
+}
+
+async function sendChat(text, files) {
+  if (!memberId) await enterRoom();
+  await api(`/api/rooms/${roomId}/messages`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ memberId, text, files: files || [] }),
+  });
+}
+
+async function shareFile(file) {
+  if (!memberId) await enterRoom();
+  const text = await file.text().catch(() => "");
+  await api(`/api/rooms/${roomId}/files`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ memberId, name: file.name, text: text.slice(0, 20000), caption: "shared " + file.name }),
+  });
+}
 
 function mime() {
-  const opts = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/mp4"];
-  return opts.find((t) => MediaRecorder.isTypeSupported(t)) || "";
+  return ["audio/webm;codecs=opus", "audio/webm"].find((t) => MediaRecorder.isTypeSupported(t)) || "";
 }
-
 function level() {
   if (!analyser) return 0;
   const buf = new Float32Array(analyser.fftSize);
@@ -133,69 +180,12 @@ function level() {
   for (const x of buf) s += x * x;
   return Math.sqrt(s / buf.length);
 }
-
-async function playWav(url) {
-  const a = new Audio(url);
-  await a.play();
-  await new Promise((r) => { a.onended = r; a.onerror = r; });
-}
-
-async function turn(body, type) {
-  const company = document.getElementById("company").value;
-  think("chair");
-  const r = await fetch("/api/turn?company=" + company, { method:"POST", headers: type ? {"Content-Type": type} : {}, body });
-  if (!r.ok || !r.body) {
-    let err = String(r.status);
-    try { err = (await r.json()).error || err; } catch {}
-    think(null);
-    throw new Error(err);
-  }
-  const reader = r.body.getReader();
-  const dec = new TextDecoder();
-  let buf = "";
-  let j = null;
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buf += dec.decode(value, { stream: true });
-    for (;;) {
-      const n = buf.indexOf("\n");
-      if (n < 0) break;
-      const line = buf.slice(0, n).trim();
-      buf = buf.slice(n + 1);
-      if (!line) continue;
-      const msg = JSON.parse(line);
-      if (msg.error) { think(null); throw new Error(msg.error); }
-      if (msg.phase === "think") think(msg.id);
-      if (msg.phase === "done") j = msg;
-    }
-  }
-  think(null);
-  if (!j) throw new Error("no reply");
-  document.getElementById("l-you").textContent = j.userText;
-  bubble("You", j.userText);
-  for (const rep of j.replies) {
-    tiles[rep.id]?.classList.add("talk");
-    document.getElementById("l-" + rep.id).textContent = rep.text;
-    bubble(rep.name, rep.text);
-    setStatus(rep.name + " speaking");
-    if (rep.audio) await playWav(rep.audio);
-    tiles[rep.id]?.classList.remove("talk");
-  }
-  if (!live) setStatus("idle");
-}
-
 async function ensureMic() {
-  const ok = stream?.getAudioTracks?.().some((t) => t.readyState === "live");
-  if (ok && analyser) {
+  if (stream?.getAudioTracks?.().some((t) => t.readyState === "live") && analyser) {
     if (audioCtx.state === "suspended") await audioCtx.resume();
     return;
   }
-  stream?.getTracks().forEach((t) => t.stop());
-  try { sourceNode?.disconnect(); } catch {}
-  stream = await navigator.mediaDevices.getUserMedia({
-    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-  });
+  stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
   audioCtx = audioCtx || new AudioContext();
   if (audioCtx.state === "suspended") await audioCtx.resume();
   sourceNode = audioCtx.createMediaStreamSource(stream);
@@ -203,13 +193,9 @@ async function ensureMic() {
   analyser.fftSize = 2048;
   sourceNode.connect(analyser);
 }
-
 function startRecorder() {
   if (rec || !stream) return;
-  chunks = [];
-  heard = false;
-  speechAt = 0;
-  lastLoud = 0;
+  chunks = []; heard = false; speechAt = 0; lastLoud = 0;
   const recStream = stream.clone();
   const t = mime();
   rec = t ? new MediaRecorder(recStream, { mimeType: t }) : new MediaRecorder(recStream);
@@ -217,27 +203,9 @@ function startRecorder() {
   rec.addEventListener("stop", () => recStream.getTracks().forEach((tr) => tr.stop()));
   rec.start(200);
 }
-
-async function waitQuiet() {
-  const deadline = Date.now() + 1500;
-  while (Date.now() < deadline) {
-    if (level() < SPEECH_RMS) {
-      await new Promise((r) => setTimeout(r, 80));
-      if (level() < SPEECH_RMS) return;
-    }
-    await new Promise((r) => setTimeout(r, 50));
-  }
-}
-
-function stopVad() {
-  if (vadTimer) cancelAnimationFrame(vadTimer);
-  vadTimer = 0;
-}
-
 function vadTick() {
   if (!live || busy || !rec) return;
-  const rms = level();
-  const now = Date.now();
+  const rms = level(), now = Date.now();
   if (rms > SPEECH_RMS) {
     if (!heard) { heard = true; speechAt = now; setStatus("listening"); }
     lastLoud = now;
@@ -247,126 +215,70 @@ function vadTick() {
   }
   vadTimer = requestAnimationFrame(vadTick);
 }
-
 async function endUtterance() {
   if (!rec || busy) return;
   busy = true;
-  stopVad();
+  if (vadTimer) cancelAnimationFrame(vadTimer);
   const done = new Promise((res) => rec.addEventListener("stop", res, { once: true }));
   if (rec.state !== "inactive") rec.stop();
   await done;
   const blob = new Blob(chunks, { type: rec.mimeType || "audio/webm" });
   rec = null;
   try {
-    if (blob.size < 800) {
-      setStatus("didn't catch that — speak again");
-    } else {
-      await turn(blob, blob.type.split(";")[0] || "audio/webm");
+    if (blob.size > 800) {
+      if (!memberId) await enterRoom();
+      await fetch(`/api/rooms/${roomId}/audio?memberId=${encodeURIComponent(memberId)}`, {
+        method: "POST",
+        headers: { "Content-Type": blob.type.split(";")[0] || "audio/webm" },
+        body: blob,
+      }).then((r) => r.json()).then((j) => { if (j.error) throw new Error(j.error); });
     }
-  } catch (e) {
-    setStatus(e.message);
-    bubble("sys", "err " + e.message);
-  }
+  } catch (e) { setStatus(e.message); }
   busy = false;
-  if (queue.length) return sendText(queue.shift());
-  if (live) await listen();
+  if (live) listen();
 }
-
 async function listen() {
   if (!live || busy) return;
-  try {
-    await ensureMic();
-    await new Promise((r) => setTimeout(r, 150));
-    await waitQuiet();
-    startRecorder();
-    setStatus("your turn — speak or type");
-    vadTick();
-  } catch (e) {
-    setStatus(e.message);
-    bubble("sys", "listen: " + e.message);
-  }
+  await ensureMic();
+  await new Promise((r) => setTimeout(r, 150));
+  startRecorder();
+  setStatus("speak or type");
+  vadTick();
 }
-
-async function join() {
-  if (!navigator.mediaDevices?.getUserMedia) {
-    setStatus("no mic API — use chat");
-    return;
-  }
-  try {
-    await ensureMic();
-  } catch (e) {
-    setStatus("mic failed — use chat");
-    bubble("sys", "mic: " + e.message);
-    if (!window.isSecureContext) bubble("sys", "Use https://192.168.68.55:8791");
-    return;
-  }
+async function voiceOn() {
+  if (!window.isSecureContext) { setStatus("mic needs HTTPS :8791"); return; }
+  if (!memberId) await enterRoom();
   live = true;
-  btn.classList.add("rec");
-  btn.textContent = "Leave";
+  talkBtn.classList.add("rec");
+  talkBtn.textContent = "Mute";
   listen();
 }
-
-function leave() {
+function voiceOff() {
   live = false;
-  stopVad();
+  if (vadTimer) cancelAnimationFrame(vadTimer);
   if (rec && rec.state !== "inactive") rec.stop();
   rec = null;
   stream?.getTracks().forEach((t) => t.stop());
   stream = null;
-  btn.classList.remove("rec");
-  btn.textContent = "Join";
-  if (!busy) setStatus("idle");
+  talkBtn.classList.remove("rec");
+  talkBtn.textContent = "Voice";
+  setStatus("in " + roomId);
 }
 
-function cmd(t) {
-  const low = t.toLowerCase();
-  if (low === "/join") { join(); return true; }
-  if (low === "/leave") { leave(); return true; }
-  return false;
-}
-
-async function sendText(t) {
-  if (cmd(t)) return;
-  const m = t.match(/^\/(chair|gtm|sales|cs|ops)\s+([\s\S]+)/i);
-  if (m) t = `Chair, give this to ${m[1]}: ${m[2]}`;
-  if (busy) {
-    queue.push(t);
-    bubble("You", t + " (queued)");
-    return;
-  }
-  busy = true;
-  stopVad();
-  if (rec && rec.state !== "inactive") rec.stop();
-  rec = null;
-  try {
-    await turn(t, "text/plain");
-  } catch (e) {
-    setStatus(e.message);
-    bubble("sys", "err " + e.message);
-  }
-  busy = false;
-  if (queue.length) return sendText(queue.shift());
-  if (live) await listen();
-}
-
-btn.addEventListener("click", (e) => {
-  e.preventDefault();
-  if (live) leave();
-  else join();
-});
-document.getElementById("chatform").addEventListener("submit", (e) => {
+document.getElementById("create").onclick = () => createRoom().catch((e) => setStatus(e.message));
+document.getElementById("enter").onclick = () => enterRoom().catch((e) => setStatus(e.message));
+talkBtn.onclick = () => { if (live) voiceOff(); else voiceOn().catch((e) => setStatus(e.message)); };
+document.getElementById("chatform").onsubmit = async (e) => {
   e.preventDefault();
   const t = typed.value.trim();
-  if (!t) return;
+  const file = document.getElementById("file").files[0];
   typed.value = "";
-  sendText(t);
-});
-typed.addEventListener("keydown", (e) => e.stopPropagation());
-document.addEventListener("keydown", (e) => {
-  if (e.code !== "Space" || e.repeat) return;
-  if (e.target === typed) return;
-  e.preventDefault();
-  if (live) leave();
-  else join();
-});
+  try {
+    if (file) { await shareFile(file); document.getElementById("file").value = ""; }
+    if (t) await sendChat(t);
+  } catch (err) { setStatus(err.message); }
+};
+refreshRooms().catch(() => {});
+setInterval(() => { refreshRooms().catch(() => {}); tick().catch(() => {}); }, 1000);
+if (!window.isSecureContext) setStatus("chat ok · mic: https://192.168.68.55:8791");
 </script>

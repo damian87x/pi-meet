@@ -1,15 +1,13 @@
 #!/usr/bin/env node
-/**
- * Local GTM meeting room: browser mic → Whisper → Pi router → Kokoro TTS.
- * Bind: 0.0.0.0:8790 (LAN). STT/TTS stay on localhost.
- */
-import { spawn, spawnSync } from "node:child_process";
+/** Room hub: humans in the browser, Pi agents via /meet. */
+import { spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import { createServer as createHttps } from "node:https";
-import { tmpdir } from "node:os";
-import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { mkdirSync, readFileSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import { tmpdir, homedir } from "node:os";
+import { dirname, join, basename } from "node:path";
 import { fileURLToPath } from "node:url";
+import { randomBytes } from "node:crypto";
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const HOST = process.env.PI_MEET_HOST || "0.0.0.0";
@@ -18,32 +16,20 @@ const TLS_PORT = Number(process.env.PI_MEET_TLS_PORT || 8791);
 const STT = process.env.PI_STT_URL || "http://127.0.0.1:10301/v1/audio/transcriptions";
 const TTS = process.env.PI_TTS_URL || "http://127.0.0.1:8181/tts";
 const HTML = join(ROOT, "index.html");
+const FILE_ROOT = join(homedir(), ".pi", "meet", "files");
+const VOICES = ["am_michael", "af_bella", "am_echo", "af_nicole", "am_onyx", "af_heart"];
 
-const COMPANIES = {
-  solvie: "Solvie",
-  miyahaihr: "Miyahaihr",
-  autonoxis: "Autonoxis",
-};
-const PEOPLE = {
-  chair: { name: "Chair", role: "routes the room", voice: "am_michael" },
-  gtm: { name: "GTM", role: "marketing / positioning", voice: "af_bella" },
-  sales: { name: "Sales", role: "pipeline, pricing, close", voice: "am_echo" },
-  cs: { name: "CS", role: "customers, support", voice: "af_nicole" },
-  ops: { name: "Ops", role: "process, delivery", voice: "am_onyx" },
-};
+const rooms = new Map();
 
-function promptFor(id, company) {
-  const label = COMPANIES[company] || company;
-  if (id === "chair") {
-    return `You are Chair of the ${label} GTM meeting. Engineering is not here.
-Seats: gtm (marketing), sales, cs, ops. Operator is speaking.
-Pick who answers. You may say one short routing line. Answer yourself only if it is purely process.
-JSON only: {"route":"sales","text":"Sales, take it."}
-route must be chair|gtm|sales|cs|ops.`;
-  }
-  const job = PEOPLE[id]?.role || id;
-  return `You are ${PEOPLE[id].name} (${job}) in the ${label} GTM meeting.
-Speak as yourself only. 1-3 spoken sentences. Plain text, no JSON, no markdown.`;
+function id(prefix) {
+  return prefix + randomBytes(4).toString("hex");
+}
+function slug(name) {
+  const s = String(name || "room").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "room";
+  return rooms.has(s) ? s + "-" + randomBytes(2).toString("hex") : s;
+}
+function roomPublic(r) {
+  return { id: r.id, name: r.name, members: r.members, seq: r.seq };
 }
 
 function send(res, status, body, type = "application/json") {
@@ -62,23 +48,21 @@ async function readBody(req) {
   for await (const c of req) chunks.push(c);
   return Buffer.concat(chunks);
 }
+async function readJson(req) {
+  const raw = (await readBody(req)).toString("utf8");
+  return raw ? JSON.parse(raw) : {};
+}
 
 function ffmpegToWav(buf, ext) {
-  const dir = mkdtempSync(join(tmpdir(), "pi-meet-"));
+  const dir = join(tmpdir(), id("pi-meet-"));
+  mkdirSync(dir);
   const inn = join(dir, `in${ext}`);
   const out = join(dir, "out.wav");
   writeFileSync(inn, buf);
-  const r = spawnSync(
-    "ffmpeg",
-    ["-y", "-i", inn, "-ac", "1", "-ar", "16000", out],
-    { encoding: "utf8" },
-  );
-  if (r.status !== 0 || !existsSync(out)) {
-    rmSync(dir, { recursive: true, force: true });
-    throw new Error(r.stderr?.slice(-400) || "ffmpeg failed");
-  }
-  const wav = readFileSync(out);
+  const r = spawnSync("ffmpeg", ["-y", "-i", inn, "-ac", "1", "-ar", "16000", out], { encoding: "utf8" });
+  const wav = existsSync(out) ? readFileSync(out) : null;
   rmSync(dir, { recursive: true, force: true });
+  if (!wav) throw new Error(r.stderr?.slice(-400) || "ffmpeg failed");
   return wav;
 }
 
@@ -92,96 +76,30 @@ async function transcribe(wav) {
   return String(j.text || "").trim();
 }
 
-const history = new Map();
-
-function withHistory(company, userText) {
-  const prev = history.get(company) || [];
-  const ctx = prev.slice(-6).join("\n");
-  return ctx ? `Recent:\n${ctx}\n\nOperator: ${userText}` : `Operator: ${userText}`;
-}
-
-function remember(company, userText, replies) {
-  const prev = history.get(company) || [];
-  prev.push(`Operator: ${userText}`);
-  for (const r of replies) prev.push(`${r.id}: ${r.text}`);
-  history.set(company, prev.slice(-16));
-}
-
-function runPi(id, company, userText) {
-  return new Promise((resolve, reject) => {
-    const args = [
-      "-p",
-      "-nt",
-      "--no-session",
-      "--no-extensions",
-      "--no-context-files",
-      "--system-prompt",
-      promptFor(id, company),
-      withHistory(company, userText),
-    ];
-    const child = spawn("pi", args, {
-      cwd: ROOT,
-      stdio: ["ignore", "pipe", "pipe"],
-      env: process.env,
-    });
-    let out = "";
-    let err = "";
-    child.stdout.on("data", (d) => (out += d));
-    child.stderr.on("data", (d) => (err += d));
-    const t = setTimeout(() => {
-      child.kill("SIGTERM");
-      reject(new Error(`${id} timed out`));
-    }, 60_000);
-    child.on("close", (code) => {
-      clearTimeout(t);
-      if (code !== 0) return reject(new Error(err.slice(-400) || `${id} exit ${code}`));
-      resolve(out.trim());
-    });
-  });
-}
-
-function parseChair(raw) {
-  const cleaned = raw.replace(/^```(?:json)?\s*|\s*```$/g, "").trim();
-  const start = cleaned.indexOf("{");
-  const end = cleaned.lastIndexOf("}");
-  if (start >= 0 && end > start) {
-    try {
-      const j = JSON.parse(cleaned.slice(start, end + 1));
-      const route = PEOPLE[j.route] ? j.route : "chair";
-      const text = String(j.text || "").trim();
-      return { route, text };
-    } catch {
-      /* fall through */
-    }
-  }
-  return { route: "chair", text: cleaned || "" };
-}
-
-async function runRoom(company, userText, onThink) {
-  await onThink?.("chair");
-  const chairRaw = await runPi("chair", company, userText);
-  const chair = parseChair(chairRaw);
-  const replies = [];
-  if (chair.text) replies.push({ id: "chair", name: "Chair", text: chair.text });
-  if (chair.route !== "chair") {
-    await onThink?.(chair.route);
-    const text = (await runPi(chair.route, company, userText)).replace(/^```\w*\s*|\s*```$/g, "").trim();
-    replies.push({ id: chair.route, name: PEOPLE[chair.route].name, text: text || "(no reply)" });
-  }
-  if (!replies.length) replies.push({ id: "chair", name: "Chair", text: chairRaw || "(no reply)" });
-  return replies;
-}
-
-async function speak(id, text) {
-  const voice = PEOPLE[id]?.voice || "af_heart";
+async function speak(text, voice) {
   const r = await fetch(TTS, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text, voice, speed: 1.0 }),
+    body: JSON.stringify({ text, voice: voice || "af_heart", speed: 1.0 }),
   });
-  if (!r.ok) throw new Error(`tts ${r.status}`);
+  if (!r.ok) return null;
   const buf = Buffer.from(await r.arrayBuffer());
   return `data:audio/wav;base64,${buf.toString("base64")}`;
+}
+
+function push(room, ev) {
+  room.seq += 1;
+  const event = { seq: room.seq, t: Date.now(), ...ev };
+  room.events.push(event);
+  if (room.events.length > 200) room.events.splice(0, room.events.length - 200);
+  return event;
+}
+
+function getRoom(url) {
+  const m = url.pathname.match(/^\/api\/rooms\/([^/]+)(?:\/(.*))?$/);
+  if (!m) return null;
+  const room = rooms.get(decodeURIComponent(m[1]));
+  return { room, rest: m[2] || "", id: m[1] };
 }
 
 const onRequest = async (req, res) => {
@@ -198,45 +116,121 @@ const onRequest = async (req, res) => {
     return send(res, 200, readFileSync(HTML, "utf8"), "text/html; charset=utf-8");
   }
   if (req.method === "GET" && url.pathname === "/api/health") {
-    return send(res, 200, { ok: true, companies: COMPANIES, people: PEOPLE });
+    return send(res, 200, { ok: true, rooms: [...rooms.keys()] });
   }
-  if (req.method === "POST" && url.pathname === "/api/turn") {
-    try {
-      const company = url.searchParams.get("company") || "solvie";
-      if (!COMPANIES[company]) return send(res, 400, { error: "unknown company" });
-      const ctype = req.headers["content-type"] || "";
-      let userText = "";
-      if (ctype.includes("text/plain") || ctype.includes("application/json")) {
-        const raw = (await readBody(req)).toString("utf8");
-        userText = ctype.includes("json") ? JSON.parse(raw).text || "" : raw.trim();
-      } else {
-        const audio = await readBody(req);
-        const ext = ctype.includes("webm") ? ".webm" : ctype.includes("ogg") ? ".ogg" : ".wav";
-        const wav = ext === ".wav" ? audio : ffmpegToWav(audio, ext);
-        userText = await transcribe(wav);
-      }
-      if (!userText) return send(res, 400, { error: "empty speech" });
-      res.writeHead(200, {
-        "Content-Type": "application/x-ndjson",
-        "Access-Control-Allow-Origin": "*",
-        "Cache-Control": "no-store",
-        "X-Accel-Buffering": "no",
+  if (req.method === "GET" && url.pathname === "/api/rooms") {
+    return send(res, 200, { rooms: [...rooms.values()].map(roomPublic) });
+  }
+  if (req.method === "POST" && url.pathname === "/api/rooms") {
+    const body = await readJson(req);
+    const r = { id: slug(body.name), name: String(body.name || "room").trim() || "room", members: [], events: [], seq: 0 };
+    rooms.set(r.id, r);
+    push(r, { type: "create", name: r.name });
+    return send(res, 200, roomPublic(r));
+  }
+
+  const hit = getRoom(url);
+  if (hit) {
+    if (!hit.room) return send(res, 404, { error: "no room" });
+    const { room, rest } = hit;
+    if (req.method === "GET" && rest === "") return send(res, 200, roomPublic(room));
+    if (req.method === "GET" && rest === "events") {
+      const since = Number(url.searchParams.get("since") || 0);
+      return send(res, 200, { room: roomPublic(room), events: room.events.filter((e) => e.seq > since) });
+    }
+    if (req.method === "POST" && rest === "join") {
+      const body = await readJson(req);
+      const member = {
+        id: body.memberId || id("m"),
+        kind: body.kind === "pi" ? "pi" : "human",
+        name: String(body.name || "anon").slice(0, 40),
+        role: String(body.role || "").slice(0, 80),
+        voice: VOICES[room.members.length % VOICES.length],
+      };
+      room.members = room.members.filter((m) => m.id !== member.id);
+      room.members.push(member);
+      push(room, { type: "join", memberId: member.id, name: member.name, kind: member.kind, role: member.role });
+      return send(res, 200, { member, room: roomPublic(room) });
+    }
+    if (req.method === "POST" && rest === "leave") {
+      const body = await readJson(req);
+      const m = room.members.find((x) => x.id === body.memberId);
+      room.members = room.members.filter((x) => x.id !== body.memberId);
+      if (m) push(room, { type: "leave", memberId: m.id, name: m.name });
+      return send(res, 200, { ok: true });
+    }
+    if (req.method === "POST" && rest === "role") {
+      const body = await readJson(req);
+      const m = room.members.find((x) => x.id === body.memberId);
+      if (!m) return send(res, 404, { error: "not in room" });
+      m.role = String(body.role || "").slice(0, 80);
+      push(room, { type: "role", memberId: m.id, name: m.name, role: m.role });
+      return send(res, 200, { member: m });
+    }
+    if (req.method === "POST" && rest === "messages") {
+      const body = await readJson(req);
+      const m = room.members.find((x) => x.id === body.memberId);
+      if (!m) return send(res, 404, { error: "join first" });
+      const text = String(body.text || "").trim();
+      const files = Array.isArray(body.files) ? body.files.slice(0, 8) : [];
+      if (!text && !files.length) return send(res, 400, { error: "empty" });
+      let audio = null;
+      if (m.kind === "pi" && text) audio = await speak(text, m.voice);
+      const ev = push(room, {
+        type: "message",
+        memberId: m.id,
+        name: m.name,
+        role: m.role,
+        kind: m.kind,
+        text,
+        files,
+        audio,
       });
-      res.flushHeaders();
-      const emit = (obj) => res.write(JSON.stringify(obj) + "\n");
-      const replies = await runRoom(company, userText, (id) => emit({ phase: "think", id }));
-      remember(company, userText, replies);
-      for (const r of replies) r.audio = await speak(r.id, r.text);
-      emit({ phase: "done", company, userText, replies });
-      res.end();
-      return;
-    } catch (e) {
-      if (res.headersSent) {
-        res.write(JSON.stringify({ error: String(e.message || e) }) + "\n");
-        res.end();
-        return;
-      }
-      return send(res, 500, { error: String(e.message || e) });
+      return send(res, 200, { event: ev });
+    }
+    if (req.method === "POST" && rest === "files") {
+      const body = await readJson(req);
+      const m = room.members.find((x) => x.id === body.memberId);
+      if (!m) return send(res, 404, { error: "join first" });
+      const name = basename(String(body.name || "file.txt"));
+      const dir = join(FILE_ROOT, room.id);
+      mkdirSync(dir, { recursive: true });
+      const path = join(dir, `${Date.now()}-${name}`);
+      const text = String(body.text || "");
+      writeFileSync(path, text);
+      const file = { name, path, text: text.slice(0, 8000) };
+      push(room, {
+        type: "message",
+        memberId: m.id,
+        name: m.name,
+        role: m.role,
+        kind: m.kind,
+        text: body.caption || `shared ${name}`,
+        files: [file],
+      });
+      return send(res, 200, { file });
+    }
+    if (req.method === "POST" && rest === "audio") {
+      const memberId = url.searchParams.get("memberId");
+      const m = room.members.find((x) => x.id === memberId);
+      if (!m) return send(res, 404, { error: "join first" });
+      const ctype = req.headers["content-type"] || "";
+      const audio = await readBody(req);
+      const ext = ctype.includes("webm") ? ".webm" : ctype.includes("ogg") ? ".ogg" : ".wav";
+      const wav = ext === ".wav" ? audio : ffmpegToWav(audio, ext);
+      const text = await transcribe(wav);
+      if (!text) return send(res, 400, { error: "empty speech" });
+      const ev = push(room, {
+        type: "message",
+        memberId: m.id,
+        name: m.name,
+        role: m.role,
+        kind: m.kind,
+        text,
+        files: [],
+        audio: null,
+      });
+      return send(res, 200, { event: ev, text });
     }
   }
   send(res, 404, { error: "not found" });
@@ -249,6 +243,6 @@ const cert = join(ROOT, "cert.pem");
 const key = join(ROOT, "key.pem");
 if (existsSync(cert) && existsSync(key)) {
   createHttps({ cert: readFileSync(cert), key: readFileSync(key) }, onRequest).listen(TLS_PORT, HOST, () => {
-    console.log(`pi-meet https://192.168.68.55:${TLS_PORT}  (accept the cert warning — mic needs HTTPS)`);
+    console.log(`pi-meet https://192.168.68.55:${TLS_PORT}`);
   });
 }

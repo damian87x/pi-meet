@@ -1,6 +1,8 @@
 #!/bin/sh
 set -e
-ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
+BIN="$0"
+while [ -L "$BIN" ]; do BIN="$(readlink -f "$BIN" 2>/dev/null || readlink "$BIN")"; done
+ROOT="$(CDPATH= cd -- "$(dirname "$BIN")/.." && pwd)"
 PID="${PI_MEET_PID:-$HOME/.pi/voice/meet.pid}"
 LOG="${PI_MEET_LOG:-$HOME/.pi/voice/meet.log}"
 up() { curl -sf http://127.0.0.1:8790/api/health >/dev/null; }
