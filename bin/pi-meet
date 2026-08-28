@@ -1,0 +1,34 @@
+#!/bin/sh
+set -e
+ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
+PID="${PI_MEET_PID:-$HOME/.pi/voice/meet.pid}"
+LOG="${PI_MEET_LOG:-$HOME/.pi/voice/meet.log}"
+up() { curl -sf http://127.0.0.1:8790/api/health >/dev/null; }
+case "${1:-status}" in
+  start)
+    if up; then echo "pi-meet already  http://192.168.68.55:8790  https://192.168.68.55:8791"; exit 0; fi
+    command -v pi-stt >/dev/null && pi-stt status >/dev/null || { echo "start STT first: pi-stt start" >&2; exit 1; }
+    pi-voice server status >/dev/null || { echo "start TTS first: pi-voice server start" >&2; exit 1; }
+    mkdir -p "$(dirname "$LOG")"
+    nohup node "$ROOT/server.mjs" >>"$LOG" 2>&1 &
+    echo $! >"$PID"
+    for i in $(seq 1 30); do up && echo "pi-meet  http://192.168.68.55:8790  https://192.168.68.55:8791 (mic)" && exit 0; sleep 0.1; done
+    echo "failed; $LOG" >&2; exit 1
+    ;;
+  stop)
+    [ -f "$PID" ] && kill "$(cat "$PID")" 2>/dev/null || true
+    rm -f "$PID"
+    echo "pi-meet stopped"
+    ;;
+  status)
+    if up; then echo "pi-meet: http://192.168.68.55:8790  https://192.168.68.55:8791"; else echo "pi-meet: offline"; exit 1; fi
+    ;;
+  cert)
+    openssl req -x509 -newkey rsa:2048 -sha256 -days 825 -nodes \
+      -keyout "$ROOT/key.pem" -out "$ROOT/cert.pem" \
+      -subj "/CN=pi-meet" \
+      -addext "subjectAltName=IP:192.168.68.55,IP:127.0.0.1,DNS:localhost"
+    echo "wrote $ROOT/cert.pem"
+    ;;
+  *) echo "usage: pi-meet start|stop|status|cert" >&2; exit 2 ;;
+esac

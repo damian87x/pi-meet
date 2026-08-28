@@ -1,0 +1,6 @@
+cert.pem
+key.pem
+*.log
+*.pid
+.DS_Store
+node_modules/

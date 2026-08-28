@@ -1,0 +1,372 @@
+<!doctype html>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Pi Meet</title>
+<style>
+  :root { color-scheme: dark; --bg:#0d1117; --card:#161b22; --line:#30363d; --fg:#e6edf3; --mut:#8b949e; --you:#3fb950; --talk:#d29922; }
+  * { box-sizing: border-box; }
+  html, body { height:100%; margin:0; }
+  body { font: 15px/1.4 ui-sans-serif, system-ui; background:var(--bg); color:var(--fg); display:flex; flex-direction:column; }
+  header { display:flex; gap:12px; align-items:center; flex-wrap:wrap; padding:12px 16px; border-bottom:1px solid var(--line); flex:none; }
+  header h1 { font-size:16px; margin:0; font-weight:600; }
+  select, button, input { background:var(--card); color:var(--fg); border:1px solid var(--line); border-radius:8px; padding:8px 10px; }
+  button { cursor:pointer; touch-action:none; user-select:none; }
+  button.rec { background:#da3633; border-color:#f85149; }
+  .wrap { flex:1; display:grid; grid-template-columns:minmax(0,1fr) minmax(260px, 380px); min-height:0; }
+  @media (max-width:900px) { .wrap { grid-template-columns:1fr; grid-template-rows:1fr 40vh; } }
+  #grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; padding:16px; overflow:auto; }
+  @media (max-width:700px) { #grid { grid-template-columns:1fr 1fr; } }
+  .tile { background:var(--card); border:1px solid var(--line); border-radius:12px; min-height:120px; padding:14px; min-width:0; }
+  .tile.talk { border-color:var(--talk); box-shadow:0 0 0 1px var(--talk); }
+  .tile.think { border-color:#58a6ff; box-shadow:0 0 0 1px #58a6ff; }
+  .tile.you { border-color:var(--you); }
+  .who { font-weight:600; }
+  .role { color:var(--mut); font-size:12px; }
+  .line { margin-top:10px; color:var(--fg); overflow-wrap:anywhere; }
+  #chat { display:flex; flex-direction:column; min-width:0; min-height:0; border-left:1px solid var(--line); background:var(--card); }
+  #log { flex:1; overflow:auto; padding:12px; display:flex; flex-direction:column; gap:8px; }
+  .msg { border:1px solid var(--line); border-radius:8px; padding:8px 10px; overflow-wrap:anywhere; }
+  .msg.me { border-color:var(--you); }
+  .msg b { display:block; font-size:12px; color:var(--mut); }
+  #chatform { display:flex; gap:8px; padding:10px; border-top:1px solid var(--line); flex:none; }
+  #typed { flex:1; min-width:0; }
+  #status { margin-left:auto; color:var(--mut); font-size:13px; display:flex; align-items:center; gap:8px; }
+  .spin { width:14px; height:14px; border:2px solid var(--line); border-top-color:#58a6ff; border-radius:50%; animation:spin .7s linear infinite; flex:none; display:inline-block; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #thinkbar { display:none; align-items:center; gap:8px; color:#58a6ff; font-weight:600; }
+  body.thinking #thinkbar { display:flex; }
+</style>
+<header>
+  <h1>Pi Meet</h1>
+  <select id="company">
+    <option value="solvie">Solvie</option>
+    <option value="miyahaihr">Miyahaihr</option>
+    <option value="autonoxis">Autonoxis</option>
+  </select>
+  <button type="button" id="talk">Join</button>
+  <span id="thinkbar"><span class="spin"></span> thinking</span>
+  <span id="status">idle</span>
+</header>
+<div class="wrap">
+  <main id="grid"></main>
+  <aside id="chat">
+    <div id="log"></div>
+    <form id="chatform">
+      <input id="typed" autocomplete="off" placeholder="Chat backup — Enter. /join /leave /sales …" />
+      <button type="submit">Send</button>
+    </form>
+  </aside>
+</div>
+<script>
+const PEOPLE = [
+  ["you","You","operator"],
+  ["chair","Chair","routes"],
+  ["gtm","GTM","marketing"],
+  ["sales","Sales","pipeline"],
+  ["cs","CS","customers"],
+  ["ops","Ops","ops"],
+];
+const tiles = {};
+const grid = document.getElementById("grid");
+for (const [id,name,role] of PEOPLE) {
+  const el = document.createElement("div");
+  el.className = "tile" + (id==="you" ? " you" : "");
+  el.innerHTML = `<div class="who">${name}</div><div class="role">${role}</div><div class="line" id="l-${id}"></div>`;
+  grid.appendChild(el);
+  tiles[id] = el;
+}
+const logEl = document.getElementById("log");
+const status = document.getElementById("status");
+const btn = document.getElementById("talk");
+const typed = document.getElementById("typed");
+const queue = [];
+function esc(s) {
+  return String(s).replace(/[&<>"]/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;" }[c]));
+}
+function log(s) { bubble("sys", s); }
+function bubble(who, text) {
+  const row = document.createElement("div");
+  row.className = "msg" + (who === "You" ? " me" : "");
+  row.innerHTML = `<b>${esc(who)}</b>${esc(text)}`;
+  logEl.appendChild(row);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+function setStatus(s) { status.textContent = s; }
+function think(id) {
+  document.body.classList.toggle("thinking", Boolean(id));
+  for (const [tid, el] of Object.entries(tiles)) {
+    el.classList.toggle("think", tid === id);
+  }
+  if (id && id !== "you") {
+    const line = document.getElementById("l-" + id);
+    if (line) line.innerHTML = '<span class="spin"></span> thinking';
+    setStatus((tiles[id]?.querySelector(".who")?.textContent || id) + " thinking");
+  }
+}
+
+if (!window.isSecureContext) {
+  const https = location.protocol === "http:"
+    ? location.href.replace("http://", "https://").replace(":8790", ":8791")
+    : "";
+  setStatus("mic needs HTTPS");
+  bubble("sys", "Mic: open " + (https || "https://192.168.68.55:8791") + " (accept cert). Chat still works here.");
+}
+
+const SILENCE_MS = 1100;
+const MIN_SPEECH_MS = 280;
+const SPEECH_RMS = 0.018;
+
+let live = false;
+let rec, chunks, stream, analyser, audioCtx, sourceNode, vadTimer;
+let heard = false, speechAt = 0, lastLoud = 0, busy = false;
+
+function mime() {
+  const opts = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/mp4"];
+  return opts.find((t) => MediaRecorder.isTypeSupported(t)) || "";
+}
+
+function level() {
+  if (!analyser) return 0;
+  const buf = new Float32Array(analyser.fftSize);
+  analyser.getFloatTimeDomainData(buf);
+  let s = 0;
+  for (const x of buf) s += x * x;
+  return Math.sqrt(s / buf.length);
+}
+
+async function playWav(url) {
+  const a = new Audio(url);
+  await a.play();
+  await new Promise((r) => { a.onended = r; a.onerror = r; });
+}
+
+async function turn(body, type) {
+  const company = document.getElementById("company").value;
+  think("chair");
+  const r = await fetch("/api/turn?company=" + company, { method:"POST", headers: type ? {"Content-Type": type} : {}, body });
+  if (!r.ok || !r.body) {
+    let err = String(r.status);
+    try { err = (await r.json()).error || err; } catch {}
+    think(null);
+    throw new Error(err);
+  }
+  const reader = r.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  let j = null;
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    for (;;) {
+      const n = buf.indexOf("\n");
+      if (n < 0) break;
+      const line = buf.slice(0, n).trim();
+      buf = buf.slice(n + 1);
+      if (!line) continue;
+      const msg = JSON.parse(line);
+      if (msg.error) { think(null); throw new Error(msg.error); }
+      if (msg.phase === "think") think(msg.id);
+      if (msg.phase === "done") j = msg;
+    }
+  }
+  think(null);
+  if (!j) throw new Error("no reply");
+  document.getElementById("l-you").textContent = j.userText;
+  bubble("You", j.userText);
+  for (const rep of j.replies) {
+    tiles[rep.id]?.classList.add("talk");
+    document.getElementById("l-" + rep.id).textContent = rep.text;
+    bubble(rep.name, rep.text);
+    setStatus(rep.name + " speaking");
+    if (rep.audio) await playWav(rep.audio);
+    tiles[rep.id]?.classList.remove("talk");
+  }
+  if (!live) setStatus("idle");
+}
+
+async function ensureMic() {
+  const ok = stream?.getAudioTracks?.().some((t) => t.readyState === "live");
+  if (ok && analyser) {
+    if (audioCtx.state === "suspended") await audioCtx.resume();
+    return;
+  }
+  stream?.getTracks().forEach((t) => t.stop());
+  try { sourceNode?.disconnect(); } catch {}
+  stream = await navigator.mediaDevices.getUserMedia({
+    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+  });
+  audioCtx = audioCtx || new AudioContext();
+  if (audioCtx.state === "suspended") await audioCtx.resume();
+  sourceNode = audioCtx.createMediaStreamSource(stream);
+  analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 2048;
+  sourceNode.connect(analyser);
+}
+
+function startRecorder() {
+  if (rec || !stream) return;
+  chunks = [];
+  heard = false;
+  speechAt = 0;
+  lastLoud = 0;
+  const recStream = stream.clone();
+  const t = mime();
+  rec = t ? new MediaRecorder(recStream, { mimeType: t }) : new MediaRecorder(recStream);
+  rec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+  rec.addEventListener("stop", () => recStream.getTracks().forEach((tr) => tr.stop()));
+  rec.start(200);
+}
+
+async function waitQuiet() {
+  const deadline = Date.now() + 1500;
+  while (Date.now() < deadline) {
+    if (level() < SPEECH_RMS) {
+      await new Promise((r) => setTimeout(r, 80));
+      if (level() < SPEECH_RMS) return;
+    }
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
+
+function stopVad() {
+  if (vadTimer) cancelAnimationFrame(vadTimer);
+  vadTimer = 0;
+}
+
+function vadTick() {
+  if (!live || busy || !rec) return;
+  const rms = level();
+  const now = Date.now();
+  if (rms > SPEECH_RMS) {
+    if (!heard) { heard = true; speechAt = now; setStatus("listening"); }
+    lastLoud = now;
+  } else if (heard && now - speechAt >= MIN_SPEECH_MS && now - lastLoud >= SILENCE_MS) {
+    endUtterance();
+    return;
+  }
+  vadTimer = requestAnimationFrame(vadTick);
+}
+
+async function endUtterance() {
+  if (!rec || busy) return;
+  busy = true;
+  stopVad();
+  const done = new Promise((res) => rec.addEventListener("stop", res, { once: true }));
+  if (rec.state !== "inactive") rec.stop();
+  await done;
+  const blob = new Blob(chunks, { type: rec.mimeType || "audio/webm" });
+  rec = null;
+  try {
+    if (blob.size < 800) {
+      setStatus("didn't catch that — speak again");
+    } else {
+      await turn(blob, blob.type.split(";")[0] || "audio/webm");
+    }
+  } catch (e) {
+    setStatus(e.message);
+    bubble("sys", "err " + e.message);
+  }
+  busy = false;
+  if (queue.length) return sendText(queue.shift());
+  if (live) await listen();
+}
+
+async function listen() {
+  if (!live || busy) return;
+  try {
+    await ensureMic();
+    await new Promise((r) => setTimeout(r, 150));
+    await waitQuiet();
+    startRecorder();
+    setStatus("your turn — speak or type");
+    vadTick();
+  } catch (e) {
+    setStatus(e.message);
+    bubble("sys", "listen: " + e.message);
+  }
+}
+
+async function join() {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    setStatus("no mic API — use chat");
+    return;
+  }
+  try {
+    await ensureMic();
+  } catch (e) {
+    setStatus("mic failed — use chat");
+    bubble("sys", "mic: " + e.message);
+    if (!window.isSecureContext) bubble("sys", "Use https://192.168.68.55:8791");
+    return;
+  }
+  live = true;
+  btn.classList.add("rec");
+  btn.textContent = "Leave";
+  listen();
+}
+
+function leave() {
+  live = false;
+  stopVad();
+  if (rec && rec.state !== "inactive") rec.stop();
+  rec = null;
+  stream?.getTracks().forEach((t) => t.stop());
+  stream = null;
+  btn.classList.remove("rec");
+  btn.textContent = "Join";
+  if (!busy) setStatus("idle");
+}
+
+function cmd(t) {
+  const low = t.toLowerCase();
+  if (low === "/join") { join(); return true; }
+  if (low === "/leave") { leave(); return true; }
+  return false;
+}
+
+async function sendText(t) {
+  if (cmd(t)) return;
+  const m = t.match(/^\/(chair|gtm|sales|cs|ops)\s+([\s\S]+)/i);
+  if (m) t = `Chair, give this to ${m[1]}: ${m[2]}`;
+  if (busy) {
+    queue.push(t);
+    bubble("You", t + " (queued)");
+    return;
+  }
+  busy = true;
+  stopVad();
+  if (rec && rec.state !== "inactive") rec.stop();
+  rec = null;
+  try {
+    await turn(t, "text/plain");
+  } catch (e) {
+    setStatus(e.message);
+    bubble("sys", "err " + e.message);
+  }
+  busy = false;
+  if (queue.length) return sendText(queue.shift());
+  if (live) await listen();
+}
+
+btn.addEventListener("click", (e) => {
+  e.preventDefault();
+  if (live) leave();
+  else join();
+});
+document.getElementById("chatform").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const t = typed.value.trim();
+  if (!t) return;
+  typed.value = "";
+  sendText(t);
+});
+typed.addEventListener("keydown", (e) => e.stopPropagation());
+document.addEventListener("keydown", (e) => {
+  if (e.code !== "Space" || e.repeat) return;
+  if (e.target === typed) return;
+  e.preventDefault();
+  if (live) leave();
+  else join();
+});
+</script>
