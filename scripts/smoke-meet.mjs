@@ -44,6 +44,7 @@ try {
   assert(html.includes("id=\"stage\""), "call stage");
   assert(html.includes("id=\"leave\""), "leave");
   assert(html.includes("getUserMedia"), "camera path");
+  assert(html.includes("Camera unavailable; using microphone only"), "camera-fallback path");
 
   const room = await api("/api/rooms", {
     method: "POST",

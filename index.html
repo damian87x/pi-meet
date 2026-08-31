@@ -194,13 +194,28 @@ async function ensureMedia() {
       stream = null;
     }
   }
+  async function getWithTimeout(constraints) {
+    const media = navigator.mediaDevices.getUserMedia(constraints);
+    const wait = new Promise((_, rej) => setTimeout(() => rej(new Error("media timeout")), 2500));
+    return Promise.race([media, wait]);
+  }
   if (!stream) {
-    const media = navigator.mediaDevices.getUserMedia({
+    const constraints = {
       audio: { echoCancellation: true, noiseSuppression: true },
       video: wantVideo ? { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" } : false,
-    });
-    const wait = new Promise((_, rej) => setTimeout(() => rej(new Error("media timeout")), 2500));
-    stream = await Promise.race([media, wait]);
+    };
+    try {
+      stream = await getWithTimeout(constraints);
+    } catch (firstErr) {
+      if (!wantVideo) throw firstErr;
+      camOn = false;
+      syncMediaButtons();
+      setStatus("Camera unavailable; using microphone only");
+      stream = await getWithTimeout({
+        audio: { echoCancellation: true, noiseSuppression: true },
+        video: false,
+      });
+    }
     stream.getAudioTracks().forEach((t) => { t.enabled = micOn; });
   }
   audioCtx = audioCtx || new AudioContext();
