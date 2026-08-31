@@ -183,21 +183,37 @@ async function refreshRooms() {
   if (cur) roomsEl.value = cur;
 }
 
+async function getWithTimeout(constraints) {
+  let timer, timedOut = false;
+  const raw = navigator.mediaDevices.getUserMedia(constraints);
+  raw.catch(() => {}); // suppress late unhandled rejection after timeout
+  const media = raw.then((s) => {
+    if (timedOut) s.getTracks().forEach((t) => t.stop());
+    return s;
+  });
+  const wait = new Promise((_, rej) => {
+    timer = setTimeout(() => { timedOut = true; rej(new Error("media timeout")); }, 2500);
+  });
+  return Promise.race([media, wait]).finally(() => clearTimeout(timer));
+}
+
 async function ensureMedia() {
   const wantVideo = camOn;
-  const wantAudio = true;
   if (stream) {
     stream.getAudioTracks().forEach((t) => { t.enabled = micOn; });
     stream.getVideoTracks().forEach((t) => { t.enabled = camOn; });
     if (wantVideo && !stream.getVideoTracks().some((t) => t.readyState === "live")) {
-      stream.getTracks().forEach((t) => t.stop());
-      stream = null;
+      try {
+        const videoOnly = await getWithTimeout({
+          video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" },
+        });
+        videoOnly.getVideoTracks().forEach((t) => stream.addTrack(t));
+      } catch (e) {
+        camOn = false;
+        syncMediaButtons();
+        setStatus("Camera unavailable; using microphone only");
+      }
     }
-  }
-  async function getWithTimeout(constraints) {
-    const media = navigator.mediaDevices.getUserMedia(constraints);
-    const wait = new Promise((_, rej) => setTimeout(() => rej(new Error("media timeout")), 2500));
-    return Promise.race([media, wait]);
   }
   if (!stream) {
     const constraints = {
@@ -220,9 +236,10 @@ async function ensureMedia() {
   }
   audioCtx = audioCtx || new AudioContext();
   if (audioCtx.state === "suspended") await audioCtx.resume();
-  if (!analyser) {
+  if (!analyser || sourceNode?.mediaStream !== stream) {
+    if (sourceNode) try { sourceNode.disconnect(); } catch {}
     sourceNode = audioCtx.createMediaStreamSource(stream);
-    analyser = audioCtx.createAnalyser();
+    analyser = analyser || audioCtx.createAnalyser();
     analyser.fftSize = 2048;
     sourceNode.connect(analyser);
   }
