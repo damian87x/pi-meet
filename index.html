@@ -156,11 +156,13 @@ function renderMembers(list) {
     const selfCam = m.id === memberId && camOn && stream?.getVideoTracks?.().some((t) => t.readyState === "live" && t.enabled);
     if (selfCam) {
       el.innerHTML = `<video autoplay muted playsinline></video><div class="meta">${esc(m.name)} <span class="kind">${esc(m.kind)}${m.role ? " · " + esc(m.role) : ""}</span></div>`;
+      stage.appendChild(el);
+      if (!el.isConnected) throw new Error("self camera tile must be connected before attaching local stream");
       attachLocalVideo(el.querySelector("video"));
     } else {
       el.innerHTML = `<div class="avatar" style="background:hsl(${hue(m.id)} 35% 28%)">${esc(initials(m.name))}</div><div class="meta">${esc(m.name)} <span class="kind">${esc(m.kind)}${m.role ? " · " + esc(m.role) : ""}</span></div>`;
+      stage.appendChild(el);
     }
-    stage.appendChild(el);
   }
 }
 
