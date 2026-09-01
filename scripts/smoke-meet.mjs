@@ -407,6 +407,70 @@ async function runBrowserMockTest(html) {
 
   await runInContext(`
     (async () => {
+      const oldAudio = Audio;
+      const oldApi = api;
+      const audioInstances = [];
+      let playResolve;
+      const playPromise = new Promise((r) => { playResolve = r; });
+      try {
+        Audio = function() {
+          const inst = { play: async () => { await playPromise; }, duration: 12, onloadedmetadata: null, ondurationchange: null, onended: null, onerror: null, error: null, fireEnded: () => { if (inst.onended) inst.onended(); }, fireError: (msg) => { inst.error = { message: msg }; if (inst.onerror) inst.onerror(); } };
+          audioInstances.push(inst);
+          return inst;
+        };
+        roomId = "room"; memberId = "me"; since = 0; sessionGeneration = 1;
+        const tile = document.createElement("div");
+        tile.dataset.sig = JSON.stringify(["x", "X", "pi", "", 0]);
+        tileById.set("x", tile);
+        talkingUntil.delete("x");
+        api = () => Promise.resolve({ room: { members: [{ id: "x", name: "X", kind: "pi" }] }, events: [{ type: "message", seq: 1, memberId: "x", name: "X", text: "", audio: "data:audio/wav;base64," }] });
+        const tickPromise = tick();
+        await new Promise((r) => setTimeout(r, 20));
+        if (audioInstances.length !== 1) throw new Error("expected one Audio, got " + audioInstances.length);
+        audioInstances[0].onloadedmetadata();
+        const afterMetadata = talkingUntil.get("x") || 0;
+        if (afterMetadata < Date.now() + 11000) throw new Error("metadata did not extend to duration: " + (afterMetadata - Date.now()));
+        playResolve();
+        await tickPromise;
+        const afterPlay = talkingUntil.get("x") || 0;
+        if (afterPlay < Date.now() + 11000) throw new Error("play resolved overwrote duration: " + (afterPlay - Date.now()));
+      } finally {
+        Audio = oldAudio;
+        api = oldApi;
+      }
+    })();
+  `, ctx, { filename: "smoke-audio-metadata-before-play", timeout: 10000 });
+
+  await runInContext(`
+    (async () => {
+      const oldAudio = Audio;
+      const oldApi = api;
+      const audioInstances = [];
+      try {
+        Audio = function() {
+          const inst = { play: async () => new Promise(() => {}), duration: 0, onloadedmetadata: null, ondurationchange: null, onended: null, onerror: null, error: null, fireEnded: () => { if (inst.onended) inst.onended(); }, fireError: (msg) => { inst.error = { message: msg }; if (inst.onerror) inst.onerror(); } };
+          audioInstances.push(inst);
+          return inst;
+        };
+        roomId = "room"; memberId = "me"; since = 0; sessionGeneration = 1;
+        const tile = document.createElement("div");
+        tile.dataset.sig = JSON.stringify(["x", "X", "pi", "", 0]);
+        tileById.set("x", tile);
+        talkingUntil.delete("x");
+        api = () => Promise.resolve({ room: { members: [{ id: "x", name: "X", kind: "pi" }] }, events: [{ type: "message", seq: 1, memberId: "x", name: "X", text: "", audio: "data:audio/wav;base64," }, { type: "message", seq: 2, memberId: "x", name: "X", text: "second" }] });
+        const tickPromise = tick();
+        const timeoutPromise = new Promise((_, rej) => setTimeout(() => rej(new Error("tick blocked on pending play")), 300));
+        await Promise.race([tickPromise, timeoutPromise]);
+        if (since !== 2) throw new Error("tick did not process all events: since=" + since);
+      } finally {
+        Audio = oldAudio;
+        api = oldApi;
+      }
+    })();
+  `, ctx, { filename: "smoke-audio-play-never-settles", timeout: 10000 });
+
+  await runInContext(`
+    (async () => {
       camOn = true; micOn = true; stream = null; analyser = null; sourceNode = null; rec = null; live = false; busy = false; mediaGeneration = 0;
       let resumeResolve;
       const resumePromise = new Promise((r) => { resumeResolve = r; });

@@ -381,13 +381,14 @@ async function playAudio(src, memberId) {
     setStatus("Audio playback failed" + (reason ? ": " + reason : ""));
   };
   a.onerror = () => onFail(a.error?.message || "audio error");
-  const extendToDuration = () => {
+  const applyTalkingDuration = () => {
     if (audioSession !== sessionGeneration) return;
     const dur = a.duration;
-    if (dur && isFinite(dur)) markTalking(memberId, Math.max(4000, dur * 1000));
+    const ms = dur && isFinite(dur) ? Math.max(4000, dur * 1000) : 4000;
+    markTalking(memberId, ms);
   };
-  a.onloadedmetadata = extendToDuration;
-  a.ondurationchange = extendToDuration;
+  a.onloadedmetadata = applyTalkingDuration;
+  a.ondurationchange = applyTalkingDuration;
   a.onended = () => {
     if (audioSession !== sessionGeneration) return;
     talkingUntil.set(memberId, Date.now());
@@ -397,7 +398,7 @@ async function playAudio(src, memberId) {
   try {
     await a.play();
     if (audioSession !== sessionGeneration) { a.pause(); return; }
-    markTalking(memberId, 4000);
+    applyTalkingDuration();
   } catch (err) {
     onFail(err?.message || String(err));
   }
@@ -415,7 +416,7 @@ async function tick() {
     if (e.type === "message") {
       bubble(e.memberId === memberId ? "You" : (e.name + (e.role ? ` · ${e.role}` : "")), e.text, e.files);
       if (e.audio && e.memberId !== memberId) {
-        await playAudio(e.audio, e.memberId);
+        void playAudio(e.audio, e.memberId);
       }
     }
     if (e.type === "join") bubble("sys", `${e.name} joined`);
