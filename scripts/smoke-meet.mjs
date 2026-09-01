@@ -431,7 +431,7 @@ async function runBrowserMockTest(html) {
         const afterMetadata = talkingUntil.get("x") || 0;
         if (afterMetadata < Date.now() + 11000) throw new Error("metadata did not extend to duration: " + (afterMetadata - Date.now()));
         playResolve();
-        await tickPromise;
+        await new Promise((r) => setTimeout(r, 0));
         const afterPlay = talkingUntil.get("x") || 0;
         if (afterPlay < Date.now() + 11000) throw new Error("play resolved overwrote duration: " + (afterPlay - Date.now()));
       } finally {
