@@ -278,6 +278,10 @@ async function ensureMedia() {
   }
   audioCtx = audioCtx || new AudioContext();
   if (audioCtx.state === "suspended") await audioCtx.resume();
+  if (myGen !== mediaGeneration) {
+    stream?.getTracks().forEach((t) => t.stop());
+    return;
+  }
   if (!analyser || sourceNode?.mediaStream !== stream) {
     if (sourceNode) try { sourceNode.disconnect(); } catch {}
     sourceNode = audioCtx.createMediaStreamSource(stream);
@@ -304,13 +308,25 @@ async function joinMeeting() {
     roomsEl.value = r.id;
   }
   roomId = roomsEl.value;
-  sessionGeneration++;
+  const thisRoom = roomId;
+  const mySession = ++sessionGeneration;
   const role = document.getElementById("myrole").value.trim();
-  const j = await api(`/api/rooms/${roomId}/join`, {
+  const j = await api(`/api/rooms/${thisRoom}/join`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ kind: "human", name: role || "You", role: role || "host" }),
   });
+  if (mySession !== sessionGeneration || roomId !== thisRoom) {
+    const staleMemberId = j?.member?.id;
+    if (staleMemberId) {
+      api(`/api/rooms/${thisRoom}/leave`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ memberId: staleMemberId }),
+      }).catch(() => {});
+    }
+    return;
+  }
   memberId = j.member.id;
   since = j.room.seq;
   renderMembers(j.room.members);

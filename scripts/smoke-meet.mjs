@@ -115,6 +115,7 @@ async function runBrowserMockTest(html) {
     MediaRecorder,
     AudioContext,
     MediaStream,
+    makeEl,
     makeStream,
     makeTrack,
     makeStreamFromTracks,
@@ -342,6 +343,63 @@ async function runBrowserMockTest(html) {
       Audio = oldAudio;
     })();
   `, ctx, { filename: "smoke-audio-callback-session", timeout: 10000 });
+
+  await runInContext(`
+    (async () => {
+      camOn = true; micOn = true; stream = null; analyser = null; sourceNode = null; rec = null; live = false; busy = false; mediaGeneration = 0;
+      let resumeResolve;
+      const resumePromise = new Promise((r) => { resumeResolve = r; });
+      preview.srcObject = "unchanged";
+      audioCtx = { state: "suspended", resume: () => resumePromise, createMediaStreamSource: (s) => { sourceNode = { mediaStream: s, disconnect: () => {}, connect: () => {} }; return sourceNode; }, createAnalyser: () => ({ fftSize: 2048, getFloatTimeDomainData: () => {} }) };
+      let late;
+      navigator.mediaDevices.getUserMedia = () => new Promise((res) => setTimeout(() => { late = makeStream({ audio: 1, video: 1 }); res(late); }, 80));
+      const p = ensureMedia();
+      await new Promise((r) => setTimeout(r, 120));
+      mediaGeneration++;
+      stream?.getTracks().forEach((t) => t.stop());
+      stream = null;
+      resumeResolve();
+      await p;
+      if (sourceNode) throw new Error("stale ensureMedia created sourceNode after resume race");
+      if (preview.srcObject !== "unchanged") throw new Error("stale ensureMedia set preview after resume race");
+      if (!late) throw new Error("late stream not created");
+      if (!late.getAudioTracks().every((t) => t._stopped)) throw new Error("late audio not stopped after resume race");
+      if (!late.getVideoTracks().every((t) => t._stopped)) throw new Error("late video not stopped after resume race");
+    })();
+  `, ctx, { filename: "smoke-media-resume-race", timeout: 10000 });
+
+  await runInContext(`
+    (async () => {
+      roomId = ""; memberId = ""; since = 0; sessionGeneration = 0; live = false; mediaGeneration = 0;
+      let joinResolve;
+      const joinPromise = new Promise((r) => { joinResolve = r; });
+      let leaveCalls = [];
+      const oldApi = api;
+      api = (path, init) => {
+        if (path.includes("/join")) {
+          setTimeout(() => {
+            sessionGeneration++;
+            joinResolve({ member: { id: "stale-member" }, room: { seq: 7, members: [{ id: "stale-member", name: "You", kind: "human", role: "host" }], name: "Stale" } });
+          }, 40);
+          return joinPromise;
+        }
+        if (path.includes("/leave")) { leaveCalls.push({ path, body: JSON.parse(init.body) }); return Promise.resolve({ ok: true }); }
+        return Promise.resolve({});
+      };
+      roomsEl.value = "room-a";
+      const myroleEl = { value: "host" };
+      document.getElementById = (id) => id === "myrole" ? myroleEl : makeEl();
+      const p = joinMeeting();
+      await p;
+      api = oldApi;
+      if (memberId === "stale-member") throw new Error("stale join response leaked memberId");
+      if (since === 7) throw new Error("stale join response leaked since");
+      if (document.body.classList.contains("in-call")) throw new Error("stale join response entered call UI");
+      if (live) throw new Error("stale join response started live");
+      const staleLeave = leaveCalls.find((c) => c.path.includes("room-a/leave") && c.body.memberId === "stale-member");
+      if (!staleLeave) throw new Error("stale server member not left: " + JSON.stringify(leaveCalls));
+    })();
+  `, ctx, { filename: "smoke-join-stale-response", timeout: 10000 });
 }
 
 async function api(path, init) {
