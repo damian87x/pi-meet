@@ -104,6 +104,8 @@ let heard = false, speechAt = 0, lastLoud = 0;
 let camOn = true, micOn = true, members = [];
 const SILENCE_MS = 1100, MIN_SPEECH_MS = 280, SPEECH_RMS = 0.018;
 const talkingUntil = new Map();
+const talkingTimers = new Map();
+const tileById = new Map();
 
 function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;" }[c])); }
 function setStatus(s) { status.textContent = s; document.getElementById("lobby-status").textContent = s; }
@@ -146,30 +148,55 @@ function renderMembers(list) {
   members = list || members;
   const n = Math.max(1, members.length);
   stage.className = "n" + Math.min(n, 6);
-  stage.innerHTML = "";
   const now = Date.now();
+  const seen = new Set();
   for (const m of members) {
+    seen.add(m.id);
+    const selfCam = m.id === memberId && camOn && stream?.getVideoTracks?.().some((t) => t.readyState === "live" && t.enabled);
+    const sig = JSON.stringify([m.id, m.name, m.kind, m.role || "", selfCam ? 1 : 0]);
     const talk = (talkingUntil.get(m.id) || 0) > now;
-    const el = document.createElement("div");
+    let el = tileById.get(m.id);
+    if (el && el.dataset.sig === sig) {
+      el.classList.toggle("talk", talk);
+      continue;
+    }
+    if (el) { el.remove(); tileById.delete(m.id); }
+    el = document.createElement("div");
     el.className = "tile" + (m.id === memberId ? " you" : "") + (talk ? " talk" : "");
     el.dataset.id = m.id;
-    const selfCam = m.id === memberId && camOn && stream?.getVideoTracks?.().some((t) => t.readyState === "live" && t.enabled);
+    el.dataset.sig = sig;
     if (selfCam) {
       el.innerHTML = `<video autoplay muted playsinline></video><div class="meta">${esc(m.name)} <span class="kind">${esc(m.kind)}${m.role ? " · " + esc(m.role) : ""}</span></div>`;
       stage.appendChild(el);
-      if (!el.isConnected) throw new Error("self camera tile must be connected before attaching local stream");
       attachLocalVideo(el.querySelector("video"));
     } else {
       el.innerHTML = `<div class="avatar" style="background:hsl(${hue(m.id)} 35% 28%)">${esc(initials(m.name))}</div><div class="meta">${esc(m.name)} <span class="kind">${esc(m.kind)}${m.role ? " · " + esc(m.role) : ""}</span></div>`;
       stage.appendChild(el);
     }
+    tileById.set(m.id, el);
+  }
+  for (const [id, el] of tileById) {
+    if (!seen.has(id)) {
+      el.remove();
+      tileById.delete(id);
+    }
   }
 }
 
 function markTalking(id, ms = 2500) {
-  talkingUntil.set(id, Date.now() + ms);
-  renderMembers(members);
-  setTimeout(() => renderMembers(members), ms + 50);
+  const until = Date.now() + ms;
+  talkingUntil.set(id, until);
+  const tile = tileById.get(id);
+  if (tile) tile.classList.add("talk");
+  const existing = talkingTimers.get(id);
+  if (existing) clearTimeout(existing);
+  talkingTimers.set(id, setTimeout(() => {
+    if (Date.now() >= (talkingUntil.get(id) || 0)) {
+      talkingUntil.delete(id);
+      const t = tileById.get(id);
+      if (t) t.classList.remove("talk");
+    }
+  }, ms + 50));
 }
 
 async function refreshRooms() {
@@ -295,6 +322,10 @@ async function leaveMeeting() {
   stream = null;
   analyser = null;
   sourceNode = null;
+  talkingUntil.clear();
+  for (const t of talkingTimers.values()) clearTimeout(t);
+  talkingTimers.clear();
+  tileById.clear();
   memberId = "";
   roomId = "";
   document.body.classList.remove("in-call", "chat-open");
@@ -314,7 +345,11 @@ async function tick() {
         markTalking(e.memberId, 4000);
         const a = new Audio(e.audio);
         a.play().catch(() => {});
-        a.onended = () => { talkingUntil.set(e.memberId, Date.now()); renderMembers(members); };
+        a.onended = () => {
+          talkingUntil.set(e.memberId, Date.now());
+          const t = tileById.get(e.memberId);
+          if (t) t.classList.remove("talk");
+        };
       }
     }
     if (e.type === "join") bubble("sys", `${e.name} joined`);

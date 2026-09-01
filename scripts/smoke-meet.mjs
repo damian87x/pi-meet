@@ -245,6 +245,14 @@ try {
   assert(!after.members.some((m) => m.id === human.member.id), "human left");
   assert(after.members.some((m) => m.id === agent.member.id), "agent still in");
 
+  await api(`/api/rooms/${room.id}/leave`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ memberId: agent.member.id }),
+  });
+  const empty = await api(`/api/rooms/${room.id}`);
+  assert(empty.members.length === 0, "zero members after both leave");
+
   console.log("SMOKE MEET OK", {
     room: room.id,
     seats: agent.room.members.map((m) => m.kind + ":" + m.name),
