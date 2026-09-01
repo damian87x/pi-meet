@@ -205,6 +205,85 @@ async function runBrowserMockTest(html) {
       if (talkingTimers.size !== 0) throw new Error("talkingTimers not cleared after leave");
     })();
   `, ctx, { filename: "smoke-leave-cleanup", timeout: 10000 });
+
+  await runInContext(`
+    (async () => {
+      roomId = "old"; memberId = "m"; since = 5;
+      let rendered = false;
+      const oldRenderMembers = renderMembers;
+      renderMembers = () => { rendered = true; };
+      const oldApi = api;
+      api = () => new Promise((res) => setTimeout(() => res({ room: { members: [] }, events: [{ type: "message", seq: 99, memberId: "x", name: "X", text: "hi" }] }), 80));
+      const p = tick();
+      await new Promise((r) => setTimeout(r, 20));
+      roomId = ""; since = 0; memberId = "";
+      await p;
+      if (rendered) throw new Error("tick rendered members after leave");
+      if (since !== 0) throw new Error("tick advanced since after leave");
+      api = oldApi; renderMembers = oldRenderMembers;
+    })();
+  `, ctx, { filename: "smoke-tick-leave", timeout: 10000 });
+
+  await runInContext(`
+    (async () => {
+      const mic = makeTrack("audio");
+      const audioStream = makeStreamFromTracks([mic]);
+      stream = audioStream;
+      camOn = true; micOn = true; rec = null; live = false; busy = false;
+      let calls = 0;
+      navigator.mediaDevices.getUserMedia = () => {
+        calls++;
+        return new Promise((res) => setTimeout(() => res(makeStreamFromTracks([makeTrack("video")])), 40));
+      };
+      const p = ensureMedia();
+      await new Promise((r) => setTimeout(r, 10));
+      stream = null;
+      await p;
+      if (calls !== 1) throw new Error("expected 1 getUserMedia call after leave, got " + calls);
+    })();
+  `, ctx, { filename: "smoke-camera-leave", timeout: 10000 });
+
+  await runInContext(`
+    (async () => {
+      stream = makeStream({ audio: 1 });
+      chunks = []; heard = true; speechAt = 0; lastLoud = 0;
+      rec = new MediaRecorder(new MediaStream(stream.getAudioTracks()));
+      rec.state = "recording";
+      rec.stop = function() { this.state = "inactive"; setTimeout(() => { if (this.onstop) this.onstop(); }, 60); };
+      busy = false; live = false;
+      const p = endUtterance();
+      await new Promise((r) => setTimeout(r, 10));
+      rec = null;
+      await p;
+      if (busy) throw new Error("busy stuck after rec nulled during endUtterance");
+    })();
+  `, ctx, { filename: "smoke-rec-null-race", timeout: 10000 });
+
+  await runInContext(`
+    (async () => {
+      const oldAudio = Audio;
+      const audioInstances = [];
+      Audio = function() {
+        const inst = { play: async () => {}, onended: null, fireEnded: () => { if (inst.onended) inst.onended(); } };
+        audioInstances.push(inst);
+        return inst;
+      };
+      roomId = "old"; memberId = "me"; since = 0;
+      const tile = document.createElement("div");
+      tile.classList.add("talk");
+      tileById.set("x", tile);
+      talkingUntil.set("x", Date.now() + 10000);
+      const oldApi = api;
+      api = () => Promise.resolve({ room: { members: [] }, events: [{ type: "message", seq: 1, memberId: "x", name: "X", text: "", audio: "data:audio/wav;base64," }] });
+      await tick();
+      api = oldApi;
+      if (audioInstances.length !== 1) throw new Error("expected one Audio, got " + audioInstances.length);
+      roomId = "new";
+      audioInstances[0].fireEnded();
+      if (!tile.classList.contains("talk")) throw new Error("old-room audio callback cleared talk class after rejoin");
+      Audio = oldAudio;
+    })();
+  `, ctx, { filename: "smoke-audio-callback-room", timeout: 10000 });
 }
 
 async function api(path, init) {

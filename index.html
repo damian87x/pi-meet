@@ -233,12 +233,14 @@ async function ensureMedia() {
     stream.getAudioTracks().forEach((t) => { t.enabled = micOn; });
     stream.getVideoTracks().forEach((t) => { t.enabled = camOn; });
     if (wantVideo && !stream.getVideoTracks().some((t) => t.readyState === "live")) {
+      const current = stream;
       try {
         const videoOnly = await getWithTimeout({
           video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" },
         });
-        stream.getVideoTracks().forEach((t) => { t.stop(); stream.removeTrack(t); });
-        videoOnly.getVideoTracks().forEach((t) => stream.addTrack(t));
+        if (stream !== current) { videoOnly.getTracks().forEach((t) => t.stop()); return; }
+        current.getVideoTracks().forEach((t) => { t.stop(); current.removeTrack(t); });
+        videoOnly.getVideoTracks().forEach((t) => current.addTrack(t));
       } catch (e) {
         camOn = false;
         syncMediaButtons();
@@ -311,8 +313,9 @@ async function joinMeeting() {
 async function leaveMeeting() {
   live = false;
   if (vadTimer) cancelAnimationFrame(vadTimer);
-  if (rec && rec.state !== "inactive") rec.stop();
-  rec = null;
+  const oldRec = rec;
+  if (oldRec && oldRec.state !== "inactive") oldRec.stop();
+  if (!busy) rec = null;
   if (memberId && roomId) {
     await api(`/api/rooms/${roomId}/leave`, {
       method: "POST",
@@ -338,7 +341,9 @@ async function leaveMeeting() {
 
 async function tick() {
   if (!roomId) return;
-  const j = await api(`/api/rooms/${roomId}/events?since=${since}`);
+  const thisRoom = roomId;
+  const j = await api(`/api/rooms/${thisRoom}/events?since=${since}`);
+  if (roomId !== thisRoom) return;
   renderMembers(j.room.members);
   for (const e of j.events || []) {
     since = e.seq;
@@ -348,8 +353,9 @@ async function tick() {
         markTalking(e.memberId, 4000);
         const a = new Audio(e.audio);
         a.play().catch(() => {});
+        const audioRoom = roomId;
         a.onended = () => {
-          if (!roomId) return;
+          if (roomId !== audioRoom) return;
           talkingUntil.set(e.memberId, Date.now());
           const t = tileById.get(e.memberId);
           if (t) t.classList.remove("talk");
@@ -415,11 +421,13 @@ function vadTick() {
 async function endUtterance() {
   if (!rec || busy) return;
   busy = true;
+  const thisRec = rec;
+  if (!thisRec) { busy = false; return; }
   if (vadTimer) cancelAnimationFrame(vadTimer);
-  const done = new Promise((res) => rec.addEventListener("stop", res, { once: true }));
-  if (rec.state !== "inactive") rec.stop();
+  const done = thisRec.state === "inactive" ? Promise.resolve() : new Promise((res) => thisRec.addEventListener("stop", res, { once: true }));
+  if (thisRec.state !== "inactive") thisRec.stop();
   await done;
-  const blob = new Blob(chunks, { type: rec.mimeType || "audio/webm" });
+  const blob = new Blob(chunks, { type: thisRec.mimeType || "audio/webm" });
   rec = null;
   try {
     if (blob.size > 800) {
