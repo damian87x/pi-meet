@@ -364,6 +364,45 @@ async function leaveMeeting() {
   setStatus("Left the meeting");
 }
 
+async function playAudio(src, memberId) {
+  const audioSession = sessionGeneration;
+  const a = new Audio(src);
+  const clearNow = () => {
+    if (audioSession !== sessionGeneration) return;
+    talkingUntil.delete(memberId);
+    const t = tileById.get(memberId);
+    if (t) t.classList.remove("talk");
+    const timer = talkingTimers.get(memberId);
+    if (timer) { clearTimeout(timer); talkingTimers.delete(memberId); }
+  };
+  const onFail = (reason) => {
+    if (audioSession !== sessionGeneration) return;
+    clearNow();
+    setStatus("Audio playback failed" + (reason ? ": " + reason : ""));
+  };
+  a.onerror = () => onFail(a.error?.message || "audio error");
+  const extendToDuration = () => {
+    if (audioSession !== sessionGeneration) return;
+    const dur = a.duration;
+    if (dur && isFinite(dur)) markTalking(memberId, Math.max(4000, dur * 1000));
+  };
+  a.onloadedmetadata = extendToDuration;
+  a.ondurationchange = extendToDuration;
+  a.onended = () => {
+    if (audioSession !== sessionGeneration) return;
+    talkingUntil.set(memberId, Date.now());
+    const t = tileById.get(memberId);
+    if (t) t.classList.remove("talk");
+  };
+  try {
+    await a.play();
+    if (audioSession !== sessionGeneration) { a.pause(); return; }
+    markTalking(memberId, 4000);
+  } catch (err) {
+    onFail(err?.message || String(err));
+  }
+}
+
 async function tick() {
   if (!roomId) return;
   const mySession = sessionGeneration;
@@ -376,23 +415,7 @@ async function tick() {
     if (e.type === "message") {
       bubble(e.memberId === memberId ? "You" : (e.name + (e.role ? ` · ${e.role}` : "")), e.text, e.files);
       if (e.audio && e.memberId !== memberId) {
-        markTalking(e.memberId, 4000);
-        const a = new Audio(e.audio);
-        a.play().catch(() => {});
-        const audioSession = sessionGeneration;
-        const extendToDuration = () => {
-          if (audioSession !== sessionGeneration) return;
-          const dur = a.duration;
-          if (dur && isFinite(dur)) markTalking(e.memberId, Math.max(4000, dur * 1000));
-        };
-        a.onloadedmetadata = extendToDuration;
-        a.ondurationchange = extendToDuration;
-        a.onended = () => {
-          if (audioSession !== sessionGeneration) return;
-          talkingUntil.set(e.memberId, Date.now());
-          const t = tileById.get(e.memberId);
-          if (t) t.classList.remove("talk");
-        };
+        await playAudio(e.audio, e.memberId);
       }
     }
     if (e.type === "join") bubble("sys", `${e.name} joined`);

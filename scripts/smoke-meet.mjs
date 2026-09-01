@@ -112,7 +112,7 @@ async function runBrowserMockTest(html) {
     URLSearchParams: globalThis.URLSearchParams,
     fetch: async () => ({ json: async () => ({}) }),
     Audio: function () {
-      const inst = { play: async () => {}, duration: 0, onloadedmetadata: null, ondurationchange: null, onended: null, fireEnded: () => { if (inst.onended) inst.onended(); } };
+      const inst = { play: async () => {}, duration: 0, onloadedmetadata: null, ondurationchange: null, onended: null, onerror: null, error: null, fireEnded: () => { if (inst.onended) inst.onended(); }, fireError: (msg) => { inst.error = { message: msg }; if (inst.onerror) inst.onerror(); } };
       return inst;
     },
     MediaRecorder,
@@ -268,7 +268,7 @@ async function runBrowserMockTest(html) {
       const oldAudio = Audio;
       const audioInstances = [];
       Audio = function() {
-        const inst = { play: async () => {}, onended: null, fireEnded: () => { if (inst.onended) inst.onended(); } };
+        const inst = { play: async () => {}, onended: null, onerror: null, error: null, fireEnded: () => { if (inst.onended) inst.onended(); }, fireError: (msg) => { inst.error = { message: msg }; if (inst.onerror) inst.onerror(); } };
         audioInstances.push(inst);
         return inst;
       };
@@ -326,7 +326,7 @@ async function runBrowserMockTest(html) {
       const oldAudio = Audio;
       const audioInstances = [];
       Audio = function() {
-        const inst = { play: async () => {}, onended: null, fireEnded: () => { if (inst.onended) inst.onended(); } };
+        const inst = { play: async () => {}, onended: null, onerror: null, error: null, fireEnded: () => { if (inst.onended) inst.onended(); }, fireError: (msg) => { inst.error = { message: msg }; if (inst.onerror) inst.onerror(); } };
         audioInstances.push(inst);
         return inst;
       };
@@ -352,7 +352,7 @@ async function runBrowserMockTest(html) {
       const oldAudio = Audio;
       const audioInstances = [];
       Audio = function() {
-        const inst = { play: async () => {}, duration: 10, onloadedmetadata: null, ondurationchange: null, onended: null, fireEnded: () => { if (inst.onended) inst.onended(); } };
+        const inst = { play: async () => {}, duration: 10, onloadedmetadata: null, ondurationchange: null, onended: null, onerror: null, error: null, fireEnded: () => { if (inst.onended) inst.onended(); }, fireError: (msg) => { inst.error = { message: msg }; if (inst.onerror) inst.onerror(); } };
         audioInstances.push(inst);
         return inst;
       };
@@ -377,6 +377,33 @@ async function runBrowserMockTest(html) {
       Audio = oldAudio;
     })();
   `, ctx, { filename: "smoke-audio-duration-talk", timeout: 10000 });
+
+  await runInContext(`
+    (async () => {
+      const oldAudio = Audio;
+      const audioInstances = [];
+      Audio = function() {
+        const inst = { play: async () => { throw new Error("NotAllowed"); }, duration: 0, onloadedmetadata: null, ondurationchange: null, onended: null, onerror: null, error: { message: "NotAllowed" }, fireEnded: () => { if (inst.onended) inst.onended(); }, fireError: (msg) => { inst.error = { message: msg }; if (inst.onerror) inst.onerror(); } };
+        audioInstances.push(inst);
+        return inst;
+      };
+      roomId = "room"; memberId = "me"; since = 0; sessionGeneration = 1;
+      const tile = document.createElement("div");
+      tile.dataset.sig = JSON.stringify(["x", "X", "pi", "", 0]);
+      tile.classList.add("talk");
+      tileById.set("x", tile);
+      talkingUntil.set("x", Date.now() + 10000);
+      const oldApi = api;
+      api = () => Promise.resolve({ room: { members: [{ id: "x", name: "X", kind: "pi" }] }, events: [{ type: "message", seq: 1, memberId: "x", name: "X", text: "", audio: "data:audio/wav;base64," }] });
+      await tick();
+      api = oldApi;
+      if (audioInstances.length !== 1) throw new Error("expected one Audio, got " + audioInstances.length);
+      if (tile.classList.contains("talk")) throw new Error("talk class retained after play rejection");
+      if (talkingUntil.has("x")) throw new Error("talkingUntil retained after play rejection");
+      if (!String(status.textContent).includes("Audio playback failed")) throw new Error("status did not show playback failure: " + status.textContent);
+      Audio = oldAudio;
+    })();
+  `, ctx, { filename: "smoke-audio-play-reject", timeout: 10000 });
 
   await runInContext(`
     (async () => {
