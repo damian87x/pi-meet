@@ -103,6 +103,8 @@ let rec, chunks, stream, analyser, audioCtx, sourceNode, vadTimer;
 let mediaGeneration = 0, sessionGeneration = 0;
 let heard = false, speechAt = 0, lastLoud = 0;
 let camOn = true, micOn = true, members = [];
+let sttController = null, tickController = null, tickPromise = null;
+const activeAudio = new Set();
 const SILENCE_MS = 1100, MIN_SPEECH_MS = 280, SPEECH_RMS = 0.018;
 const talkingUntil = new Map();
 const talkingTimers = new Map();
@@ -334,6 +336,8 @@ async function joinMeeting() {
 }
 
 async function leaveMeeting() {
+  const wasMemberId = memberId;
+  const wasRoomId = roomId;
   live = false;
   mediaGeneration++;
   sessionGeneration++;
@@ -341,13 +345,10 @@ async function leaveMeeting() {
   const oldRec = rec;
   if (oldRec && oldRec.state !== "inactive") oldRec.stop();
   if (!busy) rec = null;
-  if (memberId && roomId) {
-    await api(`/api/rooms/${roomId}/leave`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ memberId }),
-    }).catch(() => {});
-  }
+  if (sttController) { sttController.abort(); sttController = null; }
+  if (tickController) { tickController.abort(); tickController = null; }
+  for (const a of activeAudio) { try { a.pause(); a.currentTime = 0; } catch {} }
+  activeAudio.clear();
   stream?.getTracks().forEach((t) => t.stop());
   stream = null;
   analyser = null;
@@ -360,14 +361,24 @@ async function leaveMeeting() {
   memberId = "";
   roomId = "";
   document.body.classList.remove("in-call", "chat-open");
-  await ensureMedia().catch(() => {});
   setStatus("Left the meeting");
+  if (wasMemberId && wasRoomId) {
+    api(`/api/rooms/${wasRoomId}/leave`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ memberId: wasMemberId }),
+    }).catch(() => {});
+  }
 }
 
 async function playAudio(src, memberId) {
   const audioSession = sessionGeneration;
   const a = new Audio(src);
+  activeAudio.add(a);
+  const release = () => { activeAudio.delete(a); };
   const clearNow = () => {
+    try { a.pause(); a.currentTime = 0; } catch {}
+    release();
     if (audioSession !== sessionGeneration) return;
     talkingUntil.delete(memberId);
     const t = tileById.get(memberId);
@@ -376,8 +387,8 @@ async function playAudio(src, memberId) {
     if (timer) { clearTimeout(timer); talkingTimers.delete(memberId); }
   };
   const onFail = (reason) => {
-    if (audioSession !== sessionGeneration) return;
     clearNow();
+    if (audioSession !== sessionGeneration) return;
     setStatus("Audio playback failed" + (reason ? ": " + reason : ""));
   };
   a.onerror = () => onFail(a.error?.message || "audio error");
@@ -390,6 +401,7 @@ async function playAudio(src, memberId) {
   a.onloadedmetadata = applyTalkingDuration;
   a.ondurationchange = applyTalkingDuration;
   a.onended = () => {
+    release();
     if (audioSession !== sessionGeneration) return;
     talkingUntil.set(memberId, Date.now());
     const t = tileById.get(memberId);
@@ -397,7 +409,7 @@ async function playAudio(src, memberId) {
   };
   try {
     await a.play();
-    if (audioSession !== sessionGeneration) { a.pause(); return; }
+    if (audioSession !== sessionGeneration) { clearNow(); return; }
     applyTalkingDuration();
   } catch (err) {
     onFail(err?.message || String(err));
@@ -406,23 +418,39 @@ async function playAudio(src, memberId) {
 
 async function tick() {
   if (!roomId) return;
+  if (tickPromise) return tickPromise;
   const mySession = sessionGeneration;
   const thisRoom = roomId;
-  const j = await api(`/api/rooms/${thisRoom}/events?since=${since}`);
-  if (roomId !== thisRoom || mySession !== sessionGeneration) return;
-  renderMembers(j.room.members);
-  for (const e of j.events || []) {
-    since = e.seq;
-    if (e.type === "message") {
-      bubble(e.memberId === memberId ? "You" : (e.name + (e.role ? ` · ${e.role}` : "")), e.text, e.files);
-      if (e.audio && e.memberId !== memberId) {
-        void playAudio(e.audio, e.memberId);
+  const mySince = since;
+  tickController = new AbortController();
+  const signal = tickController.signal;
+  tickPromise = (async () => {
+    try {
+      const j = await api(`/api/rooms/${thisRoom}/events?since=${mySince}`, { signal });
+      if (roomId !== thisRoom || mySession !== sessionGeneration) return;
+      renderMembers(j.room.members);
+      for (const e of j.events || []) {
+        if (roomId !== thisRoom || mySession !== sessionGeneration) return;
+        since = e.seq;
+        if (e.type === "message") {
+          bubble(e.memberId === memberId ? "You" : (e.name + (e.role ? ` · ${e.role}` : "")), e.text, e.files);
+          if (e.audio && e.memberId !== memberId) {
+            void playAudio(e.audio, e.memberId);
+          }
+        }
+        if (e.type === "join") bubble("sys", `${e.name} joined`);
+        if (e.type === "leave") bubble("sys", `${e.name} left`);
+        if (e.type === "role") bubble("sys", `${e.name} is now ${e.role}`);
       }
+    } catch (e) {
+      if (e.name === "AbortError") return;
+      throw e;
+    } finally {
+      tickController = null;
+      tickPromise = null;
     }
-    if (e.type === "join") bubble("sys", `${e.name} joined`);
-    if (e.type === "leave") bubble("sys", `${e.name} left`);
-    if (e.type === "role") bubble("sys", `${e.name} is now ${e.role}`);
-  }
+  })();
+  return tickPromise;
 }
 
 async function sendChat(text, files) {
@@ -479,7 +507,12 @@ async function endUtterance() {
   if (!rec || busy) return;
   busy = true;
   const thisRec = rec;
-  if (!thisRec) { busy = false; return; }
+  const uploadSession = sessionGeneration;
+  const uploadRoom = roomId;
+  const uploadMember = memberId;
+  sttController = new AbortController();
+  const signal = sttController.signal;
+  if (!thisRec) { busy = false; sttController = null; return; }
   if (vadTimer) cancelAnimationFrame(vadTimer);
   const done = thisRec.state === "inactive" ? Promise.resolve() : new Promise((res) => thisRec.addEventListener("stop", res, { once: true }));
   if (thisRec.state !== "inactive") thisRec.stop();
@@ -488,15 +521,23 @@ async function endUtterance() {
   rec = null;
   try {
     if (blob.size > 800) {
-      await fetch(`/api/rooms/${roomId}/audio?memberId=${encodeURIComponent(memberId)}`, {
-        method: "POST",
-        headers: { "Content-Type": blob.type.split(";")[0] || "audio/webm" },
-        body: blob,
-      }).then((r) => r.json()).then((j) => { if (j.error) throw new Error(j.error); });
+      if (sessionGeneration !== uploadSession || roomId !== uploadRoom || memberId !== uploadMember) {
+        sttController.abort();
+      } else {
+        await fetch(`/api/rooms/${uploadRoom}/audio?memberId=${encodeURIComponent(uploadMember)}`, {
+          method: "POST",
+          headers: { "Content-Type": blob.type.split(";")[0] || "audio/webm" },
+          body: blob,
+          signal,
+        }).then((r) => r.json()).then((j) => { if (j.error) throw new Error(j.error); });
+      }
     }
-  } catch (e) { setStatus(e.message); }
+  } catch (e) {
+    if (e.name !== "AbortError") setStatus(e.message);
+  }
+  sttController = null;
   busy = false;
-  if (live) listen();
+  if (live && sessionGeneration === uploadSession) listen();
 }
 async function listen() {
   if (!live || busy || !micOn) return;

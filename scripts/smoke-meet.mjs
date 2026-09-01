@@ -107,6 +107,7 @@ async function runBrowserMockTest(html) {
     clearInterval: () => {},
     requestAnimationFrame: (fn) => { const id = ctx.setTimeout(fn, 0); rafs.push(id); return id; },
     cancelAnimationFrame: (id) => { ctx.clearTimeout(id); },
+    AbortController: globalThis.AbortController,
     Blob: globalThis.Blob,
     URL: globalThis.URL,
     URLSearchParams: globalThis.URLSearchParams,
@@ -548,6 +549,102 @@ async function runBrowserMockTest(html) {
       if (!staleLeave) throw new Error("stale server member not left: " + JSON.stringify(leaveCalls));
     })();
   `, ctx, { filename: "smoke-join-stale-response", timeout: 10000 });
+
+  await runInContext(`
+    (async () => {
+      roomId = "r"; memberId = "m"; sessionGeneration = 1; live = true;
+      const tracks = [makeTrack("audio"), makeTrack("video")];
+      stream = makeStreamFromTracks(tracks);
+      const tile = document.createElement("div");
+      tile.remove = () => {};
+      tileById.set("m", tile);
+      let leaveResolved = false;
+      const oldApi = api;
+      api = () => new Promise((res) => { setTimeout(() => { leaveResolved = true; res({}); }, 400); });
+      const p = leaveMeeting();
+      await new Promise((r) => setTimeout(r, 20));
+      if (!tracks.every((t) => t._stopped)) throw new Error("tracks not stopped during synchronous leave teardown");
+      if (stream !== null) throw new Error("stream not nulled during synchronous leave teardown");
+      if (memberId !== "") throw new Error("memberId not cleared during synchronous leave teardown");
+      if (roomId !== "") throw new Error("roomId not cleared during synchronous leave teardown");
+      await p;
+      await new Promise((r) => setTimeout(r, 600));
+      if (!leaveResolved) throw new Error("network leave never resolved");
+      api = oldApi;
+    })();
+  `, ctx, { filename: "smoke-leave-synchronous-teardown", timeout: 10000 });
+
+  await runInContext(`
+    (async () => {
+      roomId = "r"; memberId = "m"; sessionGeneration = 1; live = true; busy = false;
+      const mic = makeTrack("audio");
+      stream = makeStreamFromTracks([mic]);
+      chunks = [new Blob(["x".repeat(1000)], { type: "audio/webm" })];
+      rec = new MediaRecorder(new MediaStream(stream.getAudioTracks()));
+      rec.state = "recording";
+      rec.mimeType = "audio/webm";
+      rec.stop = function() { const self = this; setTimeout(() => { self.state = "inactive"; if (self.onstop) self.onstop(); }, 60); };
+      let uploadCalls = 0;
+      let uploadUrl = "";
+      const oldFetch = fetch;
+      fetch = (url) => { uploadCalls++; uploadUrl = String(url); return Promise.resolve({ json: async () => ({}) }); };
+      const oldApi = api;
+      api = () => Promise.resolve({});
+      const p = endUtterance();
+      await new Promise((r) => setTimeout(r, 10));
+      sessionGeneration++;
+      await p;
+      if (uploadCalls !== 0) throw new Error("stale STT uploaded " + uploadCalls + " time(s) to " + uploadUrl);
+      fetch = oldFetch;
+      api = oldApi;
+    })();
+  `, ctx, { filename: "smoke-stt-stale-zero-upload", timeout: 10000 });
+
+  await runInContext(`
+    (async () => {
+      roomId = "r"; memberId = "m"; sessionGeneration = 1; live = true;
+      const paused = [];
+      Audio = function() {
+        const inst = { play: async () => {}, pause: () => { paused.push(inst); }, duration: 10, currentTime: 5, onloadedmetadata: null, ondurationchange: null, onended: null, onerror: null, error: null };
+        return inst;
+      };
+      const a = new Audio("data:audio/wav;base64,");
+      activeAudio.add(a);
+      const oldApi = api;
+      api = () => Promise.resolve({});
+      await leaveMeeting();
+      if (paused.length !== 1) throw new Error("active Audio not paused on leave: " + paused.length);
+      if (activeAudio.size !== 0) throw new Error("activeAudio not cleared on leave: " + activeAudio.size);
+      if (a.currentTime !== 0) throw new Error("active Audio currentTime not reset on leave: " + a.currentTime);
+      api = oldApi;
+    })();
+  `, ctx, { filename: "smoke-audio-cancelled-on-leave", timeout: 10000 });
+
+  await runInContext(`
+    (async () => {
+      roomId = "r"; memberId = "me"; since = 0; sessionGeneration = 1;
+      let fetches = 0;
+      let bubbles = 0;
+      let audios = 0;
+      const oldBubble = bubble;
+      bubble = (...args) => { bubbles++; oldBubble(...args); };
+      const oldAudio = Audio;
+      Audio = function() {
+        audios++;
+        const inst = { play: async () => {}, duration: 5, onloadedmetadata: null, ondurationchange: null, onended: null, onerror: null, error: null };
+        return inst;
+      };
+      const oldApi = api;
+      api = () => new Promise((res) => setTimeout(() => { fetches++; res({ room: { members: [] }, events: [{ type: "message", seq: 1, memberId: "x", name: "X", text: "", audio: "data:audio/wav;base64," }] }); }, 80));
+      const p1 = tick();
+      const p2 = tick();
+      await Promise.all([p1, p2]);
+      if (fetches !== 1) throw new Error("concurrent ticks made " + fetches + " fetches");
+      if (bubbles !== 1) throw new Error("concurrent ticks made " + bubbles + " bubbles");
+      if (audios !== 1) throw new Error("concurrent ticks made " + audios + " audios");
+      api = oldApi; Audio = oldAudio; bubble = oldBubble;
+    })();
+  `, ctx, { filename: "smoke-tick-concurrent-dedup", timeout: 10000 });
 }
 
 async function api(path, init) {
