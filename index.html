@@ -278,10 +278,7 @@ async function ensureMedia() {
   }
   audioCtx = audioCtx || new AudioContext();
   if (audioCtx.state === "suspended") await audioCtx.resume();
-  if (myGen !== mediaGeneration) {
-    stream?.getTracks().forEach((t) => t.stop());
-    return;
-  }
+  if (myGen !== mediaGeneration) return;
   if (!analyser || sourceNode?.mediaStream !== stream) {
     if (sourceNode) try { sourceNode.disconnect(); } catch {}
     sourceNode = audioCtx.createMediaStreamSource(stream);

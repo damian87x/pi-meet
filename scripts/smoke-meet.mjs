@@ -370,6 +370,29 @@ async function runBrowserMockTest(html) {
 
   await runInContext(`
     (async () => {
+      camOn = true; micOn = true; analyser = null; sourceNode = null; rec = null; live = false; busy = false; mediaGeneration = 0;
+      const newerStream = makeStream({ audio: 1, video: 1 });
+      stream = newerStream;
+      let resumeResolve;
+      const resumePromise = new Promise((r) => { resumeResolve = r; });
+      preview.srcObject = "unchanged";
+      audioCtx = { state: "suspended", resume: () => resumePromise, createMediaStreamSource: (s) => { sourceNode = { mediaStream: s, disconnect: () => {}, connect: () => {} }; return sourceNode; }, createAnalyser: () => ({ fftSize: 2048, getFloatTimeDomainData: () => {} }) };
+      navigator.mediaDevices.getUserMedia = () => Promise.resolve(makeStream({ audio: 1, video: 1 }));
+      const p = ensureMedia();
+      await new Promise((r) => setTimeout(r, 20));
+      mediaGeneration++;
+      resumeResolve();
+      await p;
+      if (newerStream.getAudioTracks().some((t) => t._stopped)) throw new Error("stale ensureMedia stopped newer audio tracks");
+      if (newerStream.getVideoTracks().some((t) => t._stopped)) throw new Error("stale ensureMedia stopped newer video tracks");
+      if (stream !== newerStream) throw new Error("newer stream was replaced by stale ensureMedia");
+      if (sourceNode) throw new Error("stale ensureMedia created sourceNode after resume race");
+      if (preview.srcObject !== "unchanged") throw new Error("stale ensureMedia set preview after resume race");
+    })();
+  `, ctx, { filename: "smoke-media-resume-race-owned", timeout: 10000 });
+
+  await runInContext(`
+    (async () => {
       roomId = ""; memberId = ""; since = 0; sessionGeneration = 0; live = false; mediaGeneration = 0;
       let joinResolve;
       const joinPromise = new Promise((r) => { joinResolve = r; });
