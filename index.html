@@ -380,6 +380,13 @@ async function tick() {
         const a = new Audio(e.audio);
         a.play().catch(() => {});
         const audioSession = sessionGeneration;
+        const extendToDuration = () => {
+          if (audioSession !== sessionGeneration) return;
+          const dur = a.duration;
+          if (dur && isFinite(dur)) markTalking(e.memberId, Math.max(4000, dur * 1000));
+        };
+        a.onloadedmetadata = extendToDuration;
+        a.ondurationchange = extendToDuration;
         a.onended = () => {
           if (audioSession !== sessionGeneration) return;
           talkingUntil.set(e.memberId, Date.now());

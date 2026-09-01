@@ -111,7 +111,10 @@ async function runBrowserMockTest(html) {
     URL: globalThis.URL,
     URLSearchParams: globalThis.URLSearchParams,
     fetch: async () => ({ json: async () => ({}) }),
-    Audio: function () { return { play: async () => {}, set onended(v) {} }; },
+    Audio: function () {
+      const inst = { play: async () => {}, duration: 0, onloadedmetadata: null, ondurationchange: null, onended: null, fireEnded: () => { if (inst.onended) inst.onended(); } };
+      return inst;
+    },
     MediaRecorder,
     AudioContext,
     MediaStream,
@@ -343,6 +346,37 @@ async function runBrowserMockTest(html) {
       Audio = oldAudio;
     })();
   `, ctx, { filename: "smoke-audio-callback-session", timeout: 10000 });
+
+  await runInContext(`
+    (async () => {
+      const oldAudio = Audio;
+      const audioInstances = [];
+      Audio = function() {
+        const inst = { play: async () => {}, duration: 10, onloadedmetadata: null, ondurationchange: null, onended: null, fireEnded: () => { if (inst.onended) inst.onended(); } };
+        audioInstances.push(inst);
+        return inst;
+      };
+      roomId = "room"; memberId = "me"; since = 0; sessionGeneration = 1;
+      const tile = document.createElement("div");
+      tile.dataset.sig = JSON.stringify(["x", "X", "pi", "", 0]);
+      tileById.set("x", tile);
+      talkingUntil.delete("x");
+      const oldApi = api;
+      api = () => Promise.resolve({ room: { members: [{ id: "x", name: "X", kind: "pi" }] }, events: [{ type: "message", seq: 1, memberId: "x", name: "X", text: "", audio: "data:audio/wav;base64," }] });
+      await tick();
+      api = oldApi;
+      if (audioInstances.length !== 1) throw new Error("expected one Audio, got " + audioInstances.length);
+      if (!tile.classList.contains("talk")) throw new Error("talk class not set immediately on Pi message");
+      const shortUntil = talkingUntil.get("x") || 0;
+      if (shortUntil < Date.now() + 3500) throw new Error("immediate talking state shorter than fallback: " + (shortUntil - Date.now()));
+      if (audioInstances[0].onloadedmetadata) audioInstances[0].onloadedmetadata();
+      const longUntil = talkingUntil.get("x") || 0;
+      if (longUntil < Date.now() + 9000) throw new Error("talking state not extended to audio duration: " + (longUntil - Date.now()));
+      audioInstances[0].fireEnded();
+      if (tile.classList.contains("talk")) throw new Error("talk class not cleared on audio ended");
+      Audio = oldAudio;
+    })();
+  `, ctx, { filename: "smoke-audio-duration-talk", timeout: 10000 });
 
   await runInContext(`
     (async () => {
