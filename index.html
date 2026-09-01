@@ -510,9 +510,9 @@ async function endUtterance() {
   const uploadSession = sessionGeneration;
   const uploadRoom = roomId;
   const uploadMember = memberId;
-  sttController = new AbortController();
-  const signal = sttController.signal;
-  if (!thisRec) { busy = false; sttController = null; return; }
+  const ctrl = (sttController = new AbortController());
+  const signal = ctrl.signal;
+  if (!thisRec) { busy = false; if (sttController === ctrl) sttController = null; return; }
   if (vadTimer) cancelAnimationFrame(vadTimer);
   const done = thisRec.state === "inactive" ? Promise.resolve() : new Promise((res) => thisRec.addEventListener("stop", res, { once: true }));
   if (thisRec.state !== "inactive") thisRec.stop();
@@ -522,7 +522,7 @@ async function endUtterance() {
   try {
     if (blob.size > 800) {
       if (sessionGeneration !== uploadSession || roomId !== uploadRoom || memberId !== uploadMember) {
-        sttController.abort();
+        ctrl.abort();
       } else {
         await fetch(`/api/rooms/${uploadRoom}/audio?memberId=${encodeURIComponent(uploadMember)}`, {
           method: "POST",
@@ -535,7 +535,7 @@ async function endUtterance() {
   } catch (e) {
     if (e.name !== "AbortError") setStatus(e.message);
   }
-  sttController = null;
+  if (sttController === ctrl) sttController = null;
   busy = false;
   if (live && sessionGeneration === uploadSession) listen();
 }

@@ -602,6 +602,35 @@ async function runBrowserMockTest(html) {
 
   await runInContext(`
     (async () => {
+      roomId = "r"; memberId = "m"; sessionGeneration = 1; live = true; busy = false;
+      const mic = makeTrack("audio");
+      stream = makeStreamFromTracks([mic]);
+      chunks = [new Blob(["x".repeat(1000)], { type: "audio/webm" })];
+      rec = new MediaRecorder(new MediaStream(stream.getAudioTracks()));
+      rec.state = "recording";
+      rec.mimeType = "audio/webm";
+      rec.stop = function() { const self = this; setTimeout(() => { self.state = "inactive"; if (self.onstop) self.onstop(); }, 80); };
+      let uploadCalls = 0;
+      let uploadUrl = "";
+      const oldFetch = fetch;
+      fetch = (url) => { uploadCalls++; uploadUrl = String(url); return Promise.resolve({ json: async () => ({}) }); };
+      const oldApi = api;
+      api = () => Promise.resolve({});
+      status.textContent = "";
+      const p = endUtterance();
+      await new Promise((r) => setTimeout(r, 10));
+      await leaveMeeting();
+      await p;
+      if (uploadCalls !== 0) throw new Error("stale STT uploaded " + uploadCalls + " time(s) to " + uploadUrl);
+      if (String(status.textContent).includes("Cannot read") || String(status.textContent).includes("null")) throw new Error("stale endUtterance overwrote status: " + status.textContent);
+      if (busy) throw new Error("busy stuck after leaveMeeting race");
+      fetch = oldFetch;
+      api = oldApi;
+    })();
+  `, ctx, { filename: "smoke-stt-controller-null-race", timeout: 10000 });
+
+  await runInContext(`
+    (async () => {
       roomId = "r"; memberId = "m"; sessionGeneration = 1; live = true;
       const paused = [];
       Audio = function() {
