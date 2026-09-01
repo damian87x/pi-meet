@@ -284,6 +284,64 @@ async function runBrowserMockTest(html) {
       Audio = oldAudio;
     })();
   `, ctx, { filename: "smoke-audio-callback-room", timeout: 10000 });
+
+  await runInContext(`
+    (async () => {
+      camOn = true; micOn = true; stream = null; audioCtx = { state: "running", resume: async () => {}, createMediaStreamSource: (s) => ({ mediaStream: s, disconnect: () => {}, connect: () => {} }), createAnalyser: () => ({ fftSize: 0, getFloatTimeDomainData: () => {} }) }; analyser = { fftSize: 2048, getFloatTimeDomainData: () => {} }; sourceNode = null; rec = null; live = false; busy = false;
+      let late;
+      navigator.mediaDevices.getUserMedia = () => new Promise((res) => setTimeout(() => { late = makeStream({ audio: 1, video: 1 }); res(late); }, 300));
+      const p = ensureMedia();
+      await new Promise((r) => setTimeout(r, 50));
+      mediaGeneration++;
+      stream?.getTracks().forEach((t) => t.stop());
+      stream = null;
+      await p;
+      if (stream === late) throw new Error("stale ensureMedia assigned late stream");
+      if (!late) throw new Error("late stream not created");
+      if (!late.getAudioTracks().every((t) => t._stopped)) throw new Error("late audio not stopped");
+      if (!late.getVideoTracks().every((t) => t._stopped)) throw new Error("late video not stopped");
+    })();
+  `, ctx, { filename: "smoke-media-generation-leave", timeout: 10000 });
+
+  await runInContext(`
+    (async () => {
+      roomId = "same"; memberId = "me"; since = 0; sessionGeneration = 0;
+      const oldApi = api;
+      api = () => new Promise((res) => setTimeout(() => res({ room: { members: [] }, events: [{ type: "message", seq: 1, memberId: "x", name: "X", text: "", audio: "data:audio/wav;base64," }] }), 80));
+      const p = tick();
+      await new Promise((r) => setTimeout(r, 20));
+      sessionGeneration++;
+      await p;
+      api = oldApi;
+      if (since !== 0) throw new Error("stale tick advanced since after same-room rejoin");
+    })();
+  `, ctx, { filename: "smoke-tick-session-aba", timeout: 10000 });
+
+  await runInContext(`
+    (async () => {
+      const oldAudio = Audio;
+      const audioInstances = [];
+      Audio = function() {
+        const inst = { play: async () => {}, onended: null, fireEnded: () => { if (inst.onended) inst.onended(); } };
+        audioInstances.push(inst);
+        return inst;
+      };
+      roomId = "same"; memberId = "me"; since = 0; sessionGeneration = 1;
+      const tile = document.createElement("div");
+      tile.classList.add("talk");
+      tileById.set("x", tile);
+      talkingUntil.set("x", Date.now() + 10000);
+      const oldApi = api;
+      api = () => Promise.resolve({ room: { members: [] }, events: [{ type: "message", seq: 1, memberId: "x", name: "X", text: "", audio: "data:audio/wav;base64," }] });
+      await tick();
+      api = oldApi;
+      if (audioInstances.length !== 1) throw new Error("expected one Audio, got " + audioInstances.length);
+      sessionGeneration++;
+      audioInstances[0].fireEnded();
+      if (!tile.classList.contains("talk")) throw new Error("old-session audio callback cleared talk class after same-room rejoin");
+      Audio = oldAudio;
+    })();
+  `, ctx, { filename: "smoke-audio-callback-session", timeout: 10000 });
 }
 
 async function api(path, init) {

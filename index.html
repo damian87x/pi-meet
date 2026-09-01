@@ -100,6 +100,7 @@ const previewOff = document.getElementById("preview-off");
 const typed = document.getElementById("typed");
 let roomId = "", memberId = "", since = 0, live = false, busy = false;
 let rec, chunks, stream, analyser, audioCtx, sourceNode, vadTimer;
+let mediaGeneration = 0, sessionGeneration = 0;
 let heard = false, speechAt = 0, lastLoud = 0;
 let camOn = true, micOn = true, members = [];
 const SILENCE_MS = 1100, MIN_SPEECH_MS = 280, SPEECH_RMS = 0.018;
@@ -228,6 +229,7 @@ async function getWithTimeout(constraints) {
 }
 
 async function ensureMedia() {
+  const myGen = ++mediaGeneration;
   const wantVideo = camOn;
   if (stream) {
     stream.getAudioTracks().forEach((t) => { t.enabled = micOn; });
@@ -238,10 +240,12 @@ async function ensureMedia() {
         const videoOnly = await getWithTimeout({
           video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" },
         });
+        if (myGen !== mediaGeneration) { videoOnly.getTracks().forEach((t) => t.stop()); return; }
         if (stream !== current) { videoOnly.getTracks().forEach((t) => t.stop()); return; }
         current.getVideoTracks().forEach((t) => { t.stop(); current.removeTrack(t); });
         videoOnly.getVideoTracks().forEach((t) => current.addTrack(t));
       } catch (e) {
+        if (myGen !== mediaGeneration) return;
         camOn = false;
         syncMediaButtons();
         setStatus("Camera unavailable; using microphone only");
@@ -254,16 +258,21 @@ async function ensureMedia() {
       video: wantVideo ? { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" } : false,
     };
     try {
-      stream = await getWithTimeout(constraints);
+      const newStream = await getWithTimeout(constraints);
+      if (myGen !== mediaGeneration) { newStream.getTracks().forEach((t) => t.stop()); return; }
+      stream = newStream;
     } catch (firstErr) {
+      if (myGen !== mediaGeneration) return;
       if (!wantVideo) throw firstErr;
       camOn = false;
       syncMediaButtons();
       setStatus("Camera unavailable; using microphone only");
-      stream = await getWithTimeout({
+      const fallback = await getWithTimeout({
         audio: { echoCancellation: true, noiseSuppression: true },
         video: false,
       });
+      if (myGen !== mediaGeneration) { fallback.getTracks().forEach((t) => t.stop()); return; }
+      stream = fallback;
     }
     stream.getAudioTracks().forEach((t) => { t.enabled = micOn; });
   }
@@ -295,6 +304,7 @@ async function joinMeeting() {
     roomsEl.value = r.id;
   }
   roomId = roomsEl.value;
+  sessionGeneration++;
   const role = document.getElementById("myrole").value.trim();
   const j = await api(`/api/rooms/${roomId}/join`, {
     method: "POST",
@@ -312,6 +322,8 @@ async function joinMeeting() {
 
 async function leaveMeeting() {
   live = false;
+  mediaGeneration++;
+  sessionGeneration++;
   if (vadTimer) cancelAnimationFrame(vadTimer);
   const oldRec = rec;
   if (oldRec && oldRec.state !== "inactive") oldRec.stop();
@@ -341,9 +353,10 @@ async function leaveMeeting() {
 
 async function tick() {
   if (!roomId) return;
+  const mySession = sessionGeneration;
   const thisRoom = roomId;
   const j = await api(`/api/rooms/${thisRoom}/events?since=${since}`);
-  if (roomId !== thisRoom) return;
+  if (roomId !== thisRoom || mySession !== sessionGeneration) return;
   renderMembers(j.room.members);
   for (const e of j.events || []) {
     since = e.seq;
@@ -353,9 +366,9 @@ async function tick() {
         markTalking(e.memberId, 4000);
         const a = new Audio(e.audio);
         a.play().catch(() => {});
-        const audioRoom = roomId;
+        const audioSession = sessionGeneration;
         a.onended = () => {
-          if (roomId !== audioRoom) return;
+          if (audioSession !== sessionGeneration) return;
           talkingUntil.set(e.memberId, Date.now());
           const t = tileById.get(e.memberId);
           if (t) t.classList.remove("talk");
