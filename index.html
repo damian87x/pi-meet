@@ -138,8 +138,8 @@ function bubble(who, text, files) {
 
 function attachLocalVideo(el) {
   if (!el || !stream) return;
-  const vtrack = stream.getVideoTracks()[0];
-  if (!vtrack || vtrack.readyState !== "live" || !camOn) return;
+  const vtrack = stream.getVideoTracks().find((t) => t.readyState === "live" && t.enabled);
+  if (!vtrack || !camOn) return;
   el.srcObject = stream;
   el.play().catch(() => {});
 }
@@ -191,6 +191,7 @@ function markTalking(id, ms = 2500) {
   const existing = talkingTimers.get(id);
   if (existing) clearTimeout(existing);
   talkingTimers.set(id, setTimeout(() => {
+    talkingTimers.delete(id);
     if (Date.now() >= (talkingUntil.get(id) || 0)) {
       talkingUntil.delete(id);
       const t = tileById.get(id);
@@ -236,6 +237,7 @@ async function ensureMedia() {
         const videoOnly = await getWithTimeout({
           video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" },
         });
+        stream.getVideoTracks().forEach((t) => { t.stop(); stream.removeTrack(t); });
         videoOnly.getVideoTracks().forEach((t) => stream.addTrack(t));
       } catch (e) {
         camOn = false;
@@ -325,6 +327,7 @@ async function leaveMeeting() {
   talkingUntil.clear();
   for (const t of talkingTimers.values()) clearTimeout(t);
   talkingTimers.clear();
+  for (const el of tileById.values()) el.remove();
   tileById.clear();
   memberId = "";
   roomId = "";
@@ -346,6 +349,7 @@ async function tick() {
         const a = new Audio(e.audio);
         a.play().catch(() => {});
         a.onended = () => {
+          if (!roomId) return;
           talkingUntil.set(e.memberId, Date.now());
           const t = tileById.get(e.memberId);
           if (t) t.classList.remove("talk");
@@ -432,7 +436,9 @@ async function endUtterance() {
 async function listen() {
   if (!live || busy || !micOn) return;
   await ensureMedia();
+  if (!live || busy || !micOn) return;
   await new Promise((r) => setTimeout(r, 150));
+  if (!live || busy || !micOn) return;
   startRecorder();
   setStatus("Listening");
   vadTick();

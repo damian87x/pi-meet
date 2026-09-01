@@ -63,6 +63,7 @@ function makeStreamFromTracks(tracks) {
     getAudioTracks: () => tracks.filter((t) => t.kind === "audio"),
     getVideoTracks: () => tracks.filter((t) => t.kind === "video"),
     addTrack(t) { tracks.push(t); },
+    removeTrack(t) { const i = tracks.indexOf(t); if (i >= 0) tracks.splice(i, 1); },
   };
 }
 function makeStream({ audio = 0, video = 0 } = {}) {
@@ -168,6 +169,42 @@ async function runBrowserMockTest(html) {
       if (!sourceNode || sourceNode.mediaStream !== audioStream) throw new Error("analyser source lost");
     })();
   `, ctx, { filename: "smoke-camera-retry", timeout: 10000 });
+
+  await runInContext(`
+    (async () => {
+      const mic = makeTrack("audio");
+      const deadCam = makeTrack("video");
+      deadCam.stop();
+      const audioStream = makeStreamFromTracks([mic, deadCam]);
+      stream = audioStream;
+      analyser = { fftSize: 2048, getFloatTimeDomainData: () => {} };
+      audioCtx = { state: "running", resume: async () => {}, createMediaStreamSource: (s) => { sourceNode = { mediaStream: s, disconnect: () => {} }; return sourceNode; }, createAnalyser: () => analyser };
+      sourceNode = { mediaStream: audioStream, disconnect: () => {} };
+      camOn = true; micOn = true; rec = null; live = false; busy = false;
+      let videoTrack;
+      navigator.mediaDevices.getUserMedia = () => new Promise((res) => setTimeout(() => { videoTrack = makeTrack("video"); res(makeStreamFromTracks([videoTrack])); }, 100));
+      await ensureMedia();
+      if (!deadCam._stopped) throw new Error("ended video track not stopped on retry");
+      if (stream.getVideoTracks().length !== 1) throw new Error("ended video track not removed");
+      if (stream.getVideoTracks()[0] !== videoTrack) throw new Error("live video track not selected");
+    })();
+  `, ctx, { filename: "smoke-camera-retry-ended", timeout: 10000 });
+
+  await runInContext(`
+    (async () => {
+      const tile = document.createElement("div");
+      let removed = false;
+      tile.remove = () => { removed = true; };
+      stage.appendChild(tile);
+      tileById.set("x", tile);
+      roomId = "r"; memberId = "m";
+      stream = makeStream({ audio: 1, video: 1 });
+      await leaveMeeting();
+      if (tileById.size !== 0) throw new Error("tileById not cleared after leave");
+      if (!removed) throw new Error("stage tile not removed after leave");
+      if (talkingTimers.size !== 0) throw new Error("talkingTimers not cleared after leave");
+    })();
+  `, ctx, { filename: "smoke-leave-cleanup", timeout: 10000 });
 }
 
 async function api(path, init) {
